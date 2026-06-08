@@ -1,0 +1,6 @@
+- Upload kernel code
+- Build cpp
+
+** Note **
+- On PC, run 'sudo minicom -s /dev/ttyUSB0' for config
+- Then, run 'sudo minicom -D /dev/ttyUSB0 -b 115200'
