@@ -18,11 +18,12 @@ Connect the BBB UART pins to the corresponding RX/TX pins on the USB-to-UART ada
 
 ## Testing
 - Connect TX pin (yellow wire) and RX pin (blue wire) on BBB to USB-to-UART adapter
-images/connection.png
+![UART connection diagram](images/connection.png)
 
 ## Output
 - Uart for sending data to PC:
-images/send.png
+![UART transmission from BBB to PC](images/send.png)
 
 - Uart for reading data from PC:
-images/read.png
+
+![UART reception from PC to BBB](images/read.png)
