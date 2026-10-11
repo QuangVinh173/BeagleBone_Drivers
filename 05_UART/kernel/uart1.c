@@ -15,6 +15,7 @@
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include "main.h"
+#include "uart_ioctl.h"
 
 /* AM335x UART register offsets */
 #define UART_THR 0x00 /* Transmit Holding Register */
@@ -77,17 +78,15 @@ static irqreturn_t irqHandler(int irq, void *d)
     uart->count++;
 
     // Read val in UART_RHR to clear IIR from 0xcc to 0xc1
-    //printk("int iir -> '%x'\n", ioread32(uart->base + UART_IIR));
     uart->RX_buffer[uart->Tx_Rx_count++] = ioread32(uart->base + UART_RHR);
-    
-    //printk("-> '%d'\n", uart->RX_buffer[uart->Tx_Rx_count - 1]);
-
-    if (uart->RX_buffer[uart->Tx_Rx_count - 1] == '\n' || 
-        uart->RX_buffer[uart->Tx_Rx_count - 1] == '\r'){
-        //uart->RX_buffer[uart->Tx_Rx_count - 1] = 0;
+#if (PRINT_DEBUG)
+    printk("int iir -> '%c'\n", uart->RX_buffer[uart->Tx_Rx_count - 1]);
+#endif
+    if (uart->RX_buffer[uart->Tx_Rx_count - 1] == '\n'){
+        uart->RX_buffer[uart->Tx_Rx_count - 1] = 0;
         printk("[CPU] RX data[%d]: '%s'\n", uart->Tx_Rx_count, uart->RX_buffer);
 
-        //uart->Tx_Rx_count = 0;
+        uart->Tx_Rx_count = 0;
         uart->count = 0;
     }
 
@@ -101,7 +100,7 @@ static irqreturn_t irqHandler(int irq, void *d)
     return IRQ_HANDLED;
 }
 
-static void bbb_uart_init_hw(struct bbb_uart *uart)
+static void bbb_uart_init_hw(struct bbb_uart *uart, __u32 baudrate)
 {
     u32 val;
 
@@ -123,8 +122,30 @@ static void bbb_uart_init_hw(struct bbb_uart *uart)
 
     /* 3. Configure baud rate (e.g., 115200 with 48MHz clock) */
     iowrite32(0xBF, uart->base + UART_LCR);  /* Access DLL/DLH */
-    iowrite32(26 & 0xFF, uart->base + UART_DLL);  /* 115200 baud */
-    iowrite32(0, uart->base + UART_DLH);
+
+    switch(baudrate) {
+        case 19200:
+            iowrite32(0x9C & 0xFF, uart->base + UART_DLL);  /* 19200 baud */
+            iowrite32(0x00, uart->base + UART_DLH);
+            break;
+
+        case 115200:
+            iowrite32(0x1A & 0xFF, uart->base + UART_DLL);  /* 115200 baud */
+            iowrite32(0x00, uart->base + UART_DLH);
+            break;
+
+        case 9600:
+            iowrite32(0x38 & 0xFF, uart->base + UART_DLL);  /* 9600 baud */
+            iowrite32(0x01 & 0xFF, uart->base + UART_DLH);
+            break;
+
+        /* default 115200 */
+        default:
+            iowrite32(0x1A & 0xFF, uart->base + UART_DLL);  /* 115200 baud */
+            iowrite32(0x00, uart->base + UART_DLH);
+            break;
+    }
+
     iowrite32(0x03, uart->base + UART_LCR);  /* 8N1 */
 
     /* 4. Enable and configure FIFOs */
@@ -145,34 +166,32 @@ static void bbb_uart_init_hw(struct bbb_uart *uart)
     iowrite32(UART_IER_RHR_IT, uart->base + UART_IER);
 }
 
+static void bbb_uart_deinit_hw(struct bbb_uart *uart)
+{
+    /* Disable UART */
+    iowrite32(0x7, uart->base + UART_MDR1);  /* Disable UART */
+
+    /* Disable RHR interrupts */
+    iowrite32(0x00, uart->base + UART_IER);
+}
+
 /* File operations */
 static int bbb_uart_open(struct inode *inode, struct file *filp)
 {
     struct bbb_uart *uart = container_of(inode->i_cdev, struct bbb_uart, cdev);
     filp->private_data = uart;
 
-    /* Set offsets for control registers */
-    uart->sysc = uart->base + 0x54;  // SYSC register at offset 0x54
-    uart->syss = uart->base + 0x58;  // SYSS register at offset 0x58
-
-    bbb_uart_init_hw(uart);  // Ensure this uses uart->sysc and uart->syss correctly
-    dev_info(uart->dev, "Done - bbb_uart_init_hw\n");
-
-    dev_info(uart->dev, "Uart1 initialized\n");
-#if (PRINT_DEBUG)
-    dev_info(uart->dev, "LCR=0x%x, FCR=0x%x, MDR1=0x%x, MCR=0x%x, DLL = 0x%x\n",
-            ioread32(uart->base + UART_LCR),
-            ioread32(uart->base + UART_FCR),
-            ioread32(uart->base + UART_MDR1),
-            ioread32(uart->base + UART_MCR),
-            ioread32(uart->base + UART_DLL));
-#endif
+    printk("**bbb_uart_open**\n");
 
     return 0;
 }
 
 static int bbb_uart_release(struct inode *inode, struct file *filp)
 {
+    struct bbb_uart *uart = container_of(inode->i_cdev, struct bbb_uart, cdev);
+    filp->private_data = uart;
+
+    bbb_uart_deinit_hw(uart);
     return 0;
 }
 
@@ -182,6 +201,8 @@ static ssize_t bbb_uart_write(struct file *filp, const char __user *buf,
     struct bbb_uart *uart = filp->private_data;
     char *kbuf;
     int i;
+    u32 lsr;
+    unsigned long timeout;
 
     /* Re-enable RHR IT */
     iowrite32(UART_IER_RHR_IT, uart->base + UART_IER);
@@ -189,7 +210,7 @@ static ssize_t bbb_uart_write(struct file *filp, const char __user *buf,
     uart->count = 0;
     uart->Tx_Rx_count = 0;
 
-    kbuf = kmalloc(count, GFP_KERNEL);
+    kbuf = kmalloc(count + 1, GFP_KERNEL);
     if (!kbuf)
         return -ENOMEM;
 
@@ -197,14 +218,13 @@ static ssize_t bbb_uart_write(struct file *filp, const char __user *buf,
         kfree(kbuf);
         return -EFAULT;
     }
-    //printk("TX - count = %d\n", count);
 
-    for (i = 0; i < count; i++) {
-        unsigned long timeout = jiffies + msecs_to_jiffies(1000);
-        u32 lsr;
+    for (i = 0; i < count + 1; i++) {
+        timeout = jiffies + msecs_to_jiffies(1000);
         while (1) {
             lsr = ioread32(uart->base + UART_LSR);
-            //dev_info(uart->dev, "Write: LSR=0x%x\n", lsr);  // Log LSR value
+
+            /* Check TX FIFO empty before push data into reg */
             if (lsr & UART_LSR_TXFIFOE)
                 break;
             if (time_after(jiffies, timeout)) {
@@ -214,10 +234,12 @@ static ssize_t bbb_uart_write(struct file *filp, const char __user *buf,
             }
             cpu_relax();
         }
-        // dev_info(uart->dev, "Before writting, UART_THR = '%c'\n", ioread32(uart->base + UART_THR));  
+
+        /* After \r to move the terminal cursor to the beginning of the next line */
+        if (i == count) kbuf[i] = '\r'; 
         iowrite32(kbuf[i], uart->base + UART_THR);
-        //dev_info(uart->dev, "After writting, UART_THR = '%c'\n", ioread32(uart->base + UART_THR));  
     }
+
     printk("[CPU] TX data[%d] - Done\n", count);
 
     kfree(kbuf);
@@ -230,10 +252,6 @@ static ssize_t bbb_uart_read(struct file *filp, char __user *buf,
     struct bbb_uart *uart = filp->private_data;
     unsigned int bytes_read = 0;
 
-    if (uart->Tx_Rx_count == 0) return 0;
-
-    uart->RX_buffer[uart->Tx_Rx_count - 1] = '\n';
-
     // copy_to_user will print the buf in the terminal
     if (copy_to_user(buf, uart->RX_buffer, uart->Tx_Rx_count)) {
         return -EFAULT;
@@ -241,7 +259,6 @@ static ssize_t bbb_uart_read(struct file *filp, char __user *buf,
 
     /* Save how many bytes we are returning */
     bytes_read = uart->Tx_Rx_count;
-    //printk("Byte read = %d\n", bytes_read);
 
     /* Reset buffer and counters */
     memset(uart->RX_buffer, 0, sizeof(uart->RX_buffer));
@@ -251,12 +268,48 @@ static ssize_t bbb_uart_read(struct file *filp, char __user *buf,
     return bytes_read;
 }
 
+static long bbb_uart_ioctl(struct file *filp,
+                           unsigned int cmd,
+                           unsigned long arg)
+{
+    struct bbb_uart *uart = filp->private_data;
+    struct bbb_uart_config config;
+
+    switch (cmd) {
+    case BBB_UART_SET_CONFIG:
+        if (copy_from_user(&config,
+                           (struct bbb_uart_config __user *)arg,
+                           sizeof(config))) {
+            return -EFAULT;
+        }
+
+        /* Validate the configuration. */
+        if (config.baudrate == 0) {
+            return -EINVAL;
+        }
+
+        pr_info("BBB UART: baudrate=%u\n",
+                config.baudrate);
+
+        /*
+         * Apply the configuration to the UART hardware.
+         */
+        bbb_uart_init_hw(uart, config.baudrate);
+
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
+}
+
 static const struct file_operations bbb_uart_fops = {
-    .owner = THIS_MODULE,
-    .open = bbb_uart_open,
-    .release = bbb_uart_release,
-    .write = bbb_uart_write,
-    .read = bbb_uart_read,
+    .owner =            THIS_MODULE,
+    .open =             bbb_uart_open,
+    .release =          bbb_uart_release,
+    .write =            bbb_uart_write,
+    .read =             bbb_uart_read,
+    .unlocked_ioctl =   bbb_uart_ioctl,
 };
 
 static int bbb_uart_probe(struct platform_device *pdev)
@@ -274,7 +327,6 @@ static int bbb_uart_probe(struct platform_device *pdev)
 
     uart->count = 0;
     uart->dev = &pdev->dev;
-    platform_set_drvdata(pdev, uart);
 
     /* Get the single memory resource */
     res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -307,6 +359,12 @@ static int bbb_uart_probe(struct platform_device *pdev)
         dev_err(&pdev->dev, "%s: unable to request IRQ %d (%d)\n", __func__, uart->irq, ret);
         return ret;
     }
+
+
+
+    /* Set offsets for control registers */
+    uart->sysc = uart->base + 0x54;  // SYSC register at offset 0x54
+    uart->syss = uart->base + 0x58;  // SYSS register at offset 0x58
 
     /* Clock setup (assuming this part is unchanged) */
     uart->clk = devm_clk_get(&pdev->dev, "fck_uart1");
@@ -377,6 +435,26 @@ static int bbb_uart_probe(struct platform_device *pdev)
     }
     dev_info(&pdev->dev, "Created device /dev/uart1\n");
 
+    // /* Apply default setting */
+    // struct bbb_uart_config config = {
+    //     .baudrate = 115200,
+    // };
+
+    // bbb_uart_init_hw(uart, &config);  // Ensure this uses uart->sysc and uart->syss correctly
+    // dev_info(&pdev->dev, "Done - bbb_uart_init_hw\n");
+
+    uart->dev = &pdev->dev;
+    platform_set_drvdata(pdev, uart);
+
+    dev_info(&pdev->dev, "Uart1 initialized\n");
+#if (PRINT_DEBUG)
+    dev_info(uart->dev, "LCR=0x%x, FCR=0x%x, MDR1=0x%x, MCR=0x%x, DLL = 0x%x\n",
+            ioread32(uart->base + UART_LCR),
+            ioread32(uart->base + UART_FCR),
+            ioread32(uart->base + UART_MDR1),
+            ioread32(uart->base + UART_MCR),
+            ioread32(uart->base + UART_DLL));
+#endif
     return 0;
 }
 /* Remove function */

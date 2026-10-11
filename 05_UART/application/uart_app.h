@@ -3,6 +3,18 @@
 
 #include <string>
 #include <cstdint>
+#include <linux/ioctl.h>
+#include <linux/types.h>
+
+struct bbb_uart_config {
+    __u32 baudrate;
+};
+
+#define BBB_UART_IOC_MAGIC 'U'
+
+#define BBB_UART_SET_CONFIG \
+    _IOW(BBB_UART_IOC_MAGIC, 1, struct bbb_uart_config)
+
 
 class Uart {
 private:
@@ -22,7 +34,7 @@ public:
     Uart& operator=(Uart&& other) noexcept;
 
     // Initialize (open the device)
-    bool init();
+    bool init(struct bbb_uart_config *config);
 
     // De-initialize (close the device)
     void deinit();
@@ -42,3 +54,4 @@ public:
 };
 
 #endif // UART_H
+

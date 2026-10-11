@@ -6,14 +6,16 @@
 #include <cstring>
 #include <iostream>
 
+/* Constructor */
 Uart::Uart(const std::string& dev_path) 
     : device_path(dev_path) {}
 
+/* destructor */
 Uart::~Uart() {
-    deinit();
+    deinit(); // close fd
 }
 
-bool Uart::init() {
+bool Uart::init(struct bbb_uart_config *config) {
     if (isOpen()) {
         return true;
     }
@@ -24,14 +26,16 @@ bool Uart::init() {
         return false;
     }
 
-    // Optional: Set raw mode (recommended for custom drivers)
-    struct termios options;
-    if (tcgetattr(fd, &options) == 0) {
-        cfmakeraw(&options);
-        tcsetattr(fd, TCSANOW, &options);
+    if (ioctl(fd, BBB_UART_SET_CONFIG, config) < 0) {
+        std::cerr << "Failed to configure UART: "
+                  << strerror(errno) << std::endl;
+
+        close(fd);
+        fd = -1;
+        return false;
     }
 
-    std::cout << "UART opened: " << device_path << std::endl;
+    std::cout << "UART opened and configured: " << device_path << std::endl;
     return true;
 }
 
@@ -43,40 +47,18 @@ void Uart::deinit() {
     }
 }
 
-ssize_t Uart::write(const void* data, size_t length) {
-    if (!isOpen()) return -1;
-    return ::write(fd, data, length);
-}
-
 ssize_t Uart::write(const std::string& data) {
-    return write(data.c_str(), data.length());
+    if (!isOpen()) return -1;
+
+    /* Call kernel write func */
+    return ::write(fd, data.c_str(), data.length());
 }
 
 ssize_t Uart::read(void* buffer, size_t length) {
     if (!isOpen()) return -1;
+
+    /* Call kernel read func */
     return ::read(fd, buffer, length);
-}
-
-ssize_t Uart::readTimeout(void* buffer, size_t length, int timeout_ms) {
-    if (!isOpen()) return -1;
-
-    fd_set readfds;
-    struct timeval tv;
-
-    FD_ZERO(&readfds);
-    FD_SET(fd, &readfds);
-
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-    int ret = select(fd + 1, &readfds, nullptr, nullptr, &tv);
-    if (ret > 0) {
-        return ::read(fd, buffer, length);
-    } else if (ret == 0) {
-        return 0; // timeout
-    } else {
-        return -1; // error
-    }
 }
 
 // Move Constructor
@@ -101,3 +83,4 @@ Uart& Uart::operator=(Uart&& other) noexcept
     }
     return *this;
 }
+

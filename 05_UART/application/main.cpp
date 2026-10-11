@@ -8,18 +8,22 @@
 int main() {
     std::cout << "=== BeagleBone UART Test Application ===\n\n";
 
-    Uart uart1("/dev/uart1");        // Change to your UART device if needed
+    Uart uart1("/dev/uart1");     
 
     // move
-    Uart uart = std::move(uart1);
+    Uart uart = std::move(uart1);// Move uart1 to uart
 
-    // Initialize UART
-    if (!uart.init()) {
+    // Initialize UART (9600/19200/115200)
+    struct bbb_uart_config config = {
+        .baudrate = 19200,
+    };
+
+    if (!uart.init(&config)) {
         std::cerr << "Failed to initialize UART!\n";
         return 1;
     }
 
-    std::cout << "UART initialized successfully!\n\n";
+    std::cout << "UART initialized with baundrate: " << config.baudrate << " successfully!\n\n";
 
     std::string input;
     char buffer[256] = {0};
@@ -61,17 +65,6 @@ int main() {
                 std::cerr << "Read error!\n";
             }
         }
-        else if (input == "loop") {
-            std::cout << "Entering continuous read mode (Ctrl+C to exit)...\n";
-            while (true) {
-                ssize_t bytes = uart.readTimeout(buffer, sizeof(buffer) - 1, 1000);
-                if (bytes > 0) {
-                    buffer[bytes] = '\0';
-                    std::cout << "[RX] " << buffer;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }
         else if (input == "help") {
             std::cout << "Available commands: send <msg>, recv, loop, quit\n";
         }
@@ -83,3 +76,4 @@ int main() {
     std::cout << "\nClosing UART...\n";
     return 0;
 }
+
