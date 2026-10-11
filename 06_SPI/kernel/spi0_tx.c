@@ -14,6 +14,7 @@
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include "main.h"
+#include "spi_ioctl.h"
 
 #define DRIVER_NAME "spi0_device_driver"
 #define DEVICE_NAME "spi0"
@@ -64,16 +65,6 @@
 #define MS_DELAY 1000
 #define FIFO_USED 1
 
-// /*************** < CONTROL > *****************/
-// #define DMA_USED_TX 1
-
-// #if (DMA_USED_TX)
-// #define TX_TRIGGER 0 /* For DMA, it's must be fixed */
-// #else
-// #define TX_TRIGGER 0 /* For non-DMA, we can adjust it */
-// #endif
-// /*********************************************/
-
 /* 
 NOTE:
 + for transmitting only -> choose transmit-only mode
@@ -93,9 +84,7 @@ struct spi_device_data {
     int irq;
 
     u8 TX[256];
-    u8 jump;
     u8 jump_irq;
-    u8 wait_TX;
 
     char* tx_buf;
     size_t count;
@@ -118,13 +107,8 @@ static irqreturn_t irqHandler(int irq, void *d)
     irqsts = ioread32(data->base + MCSPI_IRQSTATUS);
 
     if ((irqsts & MCSPI_CHSTAT_TX0_EMPTY) == MCSPI_CHSTAT_TX0_EMPTY) {
-
-        data->wait_TX = 1;
-
         data->jump_irq++;
 
-        //dev_info(data->dev, "irq - 0x%x, j = %d\n", ioread32(data->base + MCSPI_IRQSTATUS), data->count);
-        //if (data->jump_irq >= data->count) iowrite32(0, data->base + MCSPI_IRQENABLE);
         // Clear the RX0_FULL interrupt
         iowrite32(MCSPI_CHSTAT_TX0_EMPTY, data->base + MCSPI_IRQSTATUS);
     }
@@ -147,6 +131,74 @@ static void spi0_tx_dma_callback(void *data)
     spi0->DMA_IRQ = 1;
 }
 
+void spi_hw_init(struct spi_device_data* data, struct bbb_spi_config* config){
+    u32 chconf;
+    // wait until software resets
+    iowrite32(1<<1, data->base + MCSPI_SYSCONFIG);
+    while(!(ioread32(data->base + MCSPI_SYSSTATUS)));
+
+    // Configure SPI controller (single-channel mode)
+    iowrite32(MCSPI_MODULCTRL_SINGLE, data->base + MCSPI_MODULCTRL);
+
+    chconf = ioread32(data->base + MCSPI_CHCONF0);
+    // Configure CHCONF0 for SPI0
+    chconf |= (8 - 1) << 7; // 8-bit word length
+
+    switch (config->mode){
+        case SPI_MODE_0: /* CPOL = 0, CPHA = 0 */
+            chconf &= ~MCSPI_CHCONF_POL; 
+            chconf &= ~MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_1: /* CPOL = 0, CPHA = 1 */
+            chconf &= ~MCSPI_CHCONF_POL; 
+            chconf |= MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_2: /* CPOL = 1, CPHA = 0 */
+            chconf |= MCSPI_CHCONF_POL; 
+            chconf &= ~MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_3: /* CPOL = 1, CPHA = 0 */
+            chconf |= MCSPI_CHCONF_POL; 
+            chconf |= MCSPI_CHCONF_PHA;
+            break;
+    }
+
+    chconf &= ~MCSPI_CHCONF_IS; // D0 as input (MISO)
+    chconf |= MCSPI_CHCONF_DPE0; 
+
+    chconf &= ~MCSPI_CHCONF_DPE1; // D1 as output (MOSI)
+
+    // MCSPI_CHCONF_EPOL -> 0
+
+    chconf &= ~(1<<29); // Clock granularity of power of 2
+    /* set clock divisor */
+    // Ex: Divide by 64 (2^6 = 64) -> clk =  48 000 000 / 64 = 750 000 Hz
+    chconf |= (config->clk_divided) << 2; 
+
+    chconf |= MCSPI_CHCONF_EPOL; // low EN - EPOL = 1, high EN - EPOL = 0
+
+    chconf |= 2 << 12; // transmit-mode only
+
+    chconf |= FIFO_USED << 27; // The buffer is used to transmit data.
+
+    iowrite32(chconf, data->base + MCSPI_CHCONF0);
+
+
+    iowrite32(0, data->base + MCSPI_XFERLEVEL); // interrupt at least 1 byte
+
+    // in DMA, no need interrupt
+    // Enable TX0 empty interrupt
+    //iowrite32(MCSPI_CHSTAT_TX0_EMPTY, data->base + MCSPI_IRQENABLE);
+
+    // Enable the SPI channel
+    iowrite32(1, data->base + MCSPI_CHCTRL0);
+
+    dev_info(data->dev, "ch0ststus = 0x%x\n", ioread32(data->base + MCSPI_CHSTAT0));
+}
+
 static int spi_device_open(struct inode *inode, struct file *file)
 {
     struct spi_device_data *data = container_of(inode->i_cdev, struct spi_device_data, cdev);
@@ -155,7 +207,7 @@ static int spi_device_open(struct inode *inode, struct file *file)
 }
 
 void Non_dma_write(struct spi_device_data* data){
-    int i, j;
+    int i;
     unsigned long timeout;
     u32 ch0cfg;
 #if (PRINT_DEBUG_TX)
@@ -184,7 +236,6 @@ void Non_dma_write(struct spi_device_data* data){
     ch0cfg = ioread32(data->base + MCSPI_CHCONF0);
     ch0cfg |= MCSPI_CHCONF_FORCE; 
     iowrite32(ch0cfg, data->base + MCSPI_CHCONF0);
-//data->count = 0;
     timeout = jiffies + msecs_to_jiffies(3000);
 
     // Perform the transfer
@@ -204,24 +255,7 @@ void Non_dma_write(struct spi_device_data* data){
             cpu_relax();
         }
 
-        // Then, write the number of writes defined by MCSPI_XFERLEVEL[AEL] + 1
-        for (j = 0; j < TX_TRIGGER + 1; j++){
-
-            data->jump++;
-
-            iowrite32(data->tx_buf[j + i], data->base + MCSPI_TX0);
-
-            if (data->jump == data->count) break;
-        }
-        if (data->jump == data->count) data->wait_TX = 1;
-        while(data->wait_TX != 1);
-
-        udelay(100); // need a small break to after interrupt handler
-
-        data->wait_TX = 0;
-        i += TX_TRIGGER;
-
-        //iowrite32(data->tx_buf[i], data->base + MCSPI_TX0);
+        iowrite32(data->tx_buf[i], data->base + MCSPI_TX0);
 
     }
     iowrite32(0, data->base + MCSPI_IRQENABLE); // disable TX interrupt
@@ -310,7 +344,7 @@ void Dma_write(struct spi_device_data* data){
     dma_async_issue_pending(data->tx_chan);
 
     //udelay(50); // wait 50 us to let DMA transfer is done
-    iowrite32(((char*)data->tx_buf)[0], data->base + MCSPI_TX0); // write the number of bytes defined in TX_TRIGGER to trigger DMA request (here TX_TRIGGER is 1, so write 1 byte manually)
+    iowrite32(((char*)data->tx_buf)[0], data->base + MCSPI_TX0); // write the first byte by CPU to trigger DMA
     udelay(50); // wait 50 us to let DMA transfer is done
 
     ret = wait_for_completion_timeout(&data->tx_completion, msecs_to_jiffies(1000));
@@ -346,7 +380,6 @@ static ssize_t spi_device_write(struct file *filp, const char __user *buf, size_
         return -ENOMEM;
 
     data->jump_irq = 0;
-    data->jump = 0;
     data->DMA_IRQ = 0;
 
     if (copy_from_user(kbuf, buf, count)) {
@@ -362,7 +395,6 @@ static ssize_t spi_device_write(struct file *filp, const char __user *buf, size_
     Non_dma_write(data);
 #endif
 
-    // usleep_range(1000, 3000);
 #if (PRINT_DEBUG_TX)
     dev_info(data->dev, "Done writing %zu bytes: %*ph\n", count, (int)count, data->tx_buf);
 #endif
@@ -374,70 +406,59 @@ static ssize_t spi_device_read(struct file *filp, char __user *buf, size_t count
     struct spi_device_data *data = filp->private_data;
 
     //iowrite32(1, data->base + MCSPI_CHCTRL0);
-    dev_info(data->dev, "Jump IRQ = %d, jump w = %d, coun = %d\n", data->jump_irq, data->jump, data->count);
+    dev_info(data->dev, "Jump IRQ = %d, count = %d\n", data->jump_irq, data->count);
 
     if (data->DMA_IRQ) dev_info(data->dev, "TX DMA callback called\n");
 
     data->jump_irq = 0;
-    data->jump = 0;
     data->DMA_IRQ = 0;
 
     return 0;
 }
 
+static long spi_device_ioctl(struct file *filp,
+                             unsigned int cmd,
+                             unsigned long arg)
+{
+    struct spi_device_data *spi = filp->private_data;
+    struct bbb_spi_config config;
+
+    switch (cmd) {
+    case BBB_SPI_SET_CONFIG:
+        if (copy_from_user(&config,
+                           (struct bbb_spi_config __user *)arg,
+                           sizeof(config))) {
+            return -EFAULT;
+        }
+
+        /* Validate the configuration. */
+        if (config.clk_divided < 0x00 || config.clk_divided > 0x0F) {
+            return -EINVAL;
+        }
+
+        pr_info("BBB SPI: clk_divided=%u\n",
+                config.clk_divided);
+
+        /*
+         * Apply the configuration to the SPI hardware.
+         */
+        spi_hw_init(spi, &config);
+
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
+}
+
 static const struct file_operations spi_device_fops = {
-    .owner = THIS_MODULE,
-    .open = spi_device_open,
-    .write = spi_device_write,
-    .read = spi_device_read,
+    .owner =            THIS_MODULE,
+    .open =             spi_device_open,
+    .write =            spi_device_write,
+    .read =             spi_device_read,
+    .unlocked_ioctl =   spi_device_ioctl,
 };
 
-void spi_hw_init(struct spi_device_data* data){
-    u32 chconf;
-    // wait until software resets
-    iowrite32(1<<1, data->base + MCSPI_SYSCONFIG);
-    while(!(ioread32(data->base + MCSPI_SYSSTATUS)));
-
-    // Configure SPI controller (single-channel mode)
-    iowrite32(MCSPI_MODULCTRL_SINGLE, data->base + MCSPI_MODULCTRL);
-
-    chconf = ioread32(data->base + MCSPI_CHCONF0);
-    // Configure CHCONF0 for SPI0
-    chconf |= (8 - 1) << 7; // 8-bit word length
-    chconf &= ~MCSPI_CHCONF_POL; // SPI Mode 0
-    chconf &= ~MCSPI_CHCONF_PHA;
-
-    chconf &= ~MCSPI_CHCONF_IS; // D0 as input (MISO)
-    chconf |= MCSPI_CHCONF_DPE0; 
-
-    chconf &= ~MCSPI_CHCONF_DPE1; // D1 as output (MOSI)
-
-    // MCSPI_CHCONF_EPOL -> 0
-
-    chconf &= ~(1<<29); // Clock granularity of power of 2
-    /* set clock divisor */
-    chconf |= 6 << 2; // Divide by 64 (2^6 = 64) -> clk =  48 000 000 / 64 = 750 000 Hz
-
-    chconf |= MCSPI_CHCONF_EPOL; // low EN - EPOL = 1, high EN - EPOL = 0
-
-    chconf |= 2 << 12; // transmit-mode only
-
-    chconf |= FIFO_USED << 27; // The buffer is used to transmit data.
-
-    iowrite32(chconf, data->base + MCSPI_CHCONF0);
-
-
-    iowrite32(TX_TRIGGER, data->base + MCSPI_XFERLEVEL); // interrupt at least 3 bytes
-
-    // in DMA, no need interrupt
-    // Enable TX0 empty interrupt
-    //iowrite32(MCSPI_CHSTAT_TX0_EMPTY, data->base + MCSPI_IRQENABLE);
-
-    // Enable the SPI channel
-    iowrite32(1, data->base + MCSPI_CHCTRL0);
-
-    dev_info(data->dev, "ch0ststus = 0x%x\n", ioread32(data->base + MCSPI_CHSTAT0));
-}
 #if (DMA_USED_TX)
 static int spi0_configure_dma(struct spi_device_data *data)
 {
@@ -490,8 +511,6 @@ static int spi_device_probe(struct platform_device *pdev)
     // }
     data->base = ioremap(SPI0_BASE, 0x10000);
     data->dev = &pdev->dev;
-    data->jump = 0;
-    data->wait_TX = 0;
     data->DMA_IRQ = 0;
 
     /* Clock setup (assuming this part is unchanged) */
@@ -507,7 +526,7 @@ static int spi_device_probe(struct platform_device *pdev)
     }
     dev_info(&pdev->dev, "SPI0 clock rate: %lu Hz\n", clk_get_rate(data->clk));
 
-    spi_hw_init(data);
+    // spi_hw_init(data);
 
     // ========== Request IRQ (hwirq 65 maps to swirq 19 on AM33xx) ==========
     data->irq = platform_get_irq(pdev, 0);

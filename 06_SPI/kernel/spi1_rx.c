@@ -16,6 +16,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/workqueue.h>
 #include "main.h"
+#include "spi_ioctl.h"
 
 #define DRIVER_NAME "spi1_device_driver"
 #define DEVICE_NAME "spi1"
@@ -26,12 +27,6 @@
 // Register offsets for OMAP2 McSPI (AM33xx SPI1, base 0x481a0000)
 #define MCSPI_SYSCONFIG   0x110
 #define MCSPI_SYSSTATUS   0x114
-
-// #define MCSPI_CHCONF1     0x140
-// #define MCSPI_CHSTAT1     0x144
-// #define MCSPI_CHCTRL1     0x148
-// #define MCSPI_TX1         0x14c
-// #define MCSPI_RX1         0x150
 
 #define MCSPI_CHCONF0     0x12c
 #define MCSPI_CHSTAT0     0x130
@@ -105,9 +100,67 @@ struct spi_device_data {
     size_t count;
 
     struct work_struct re_request_work;
+
+    struct bbb_spi_config* pcfg;
 };
 
-void spi_hw_init(struct spi_device_data *data);
+void spi_hw_init(struct spi_device_data *data, struct bbb_spi_config* config){
+    u32 chconf = 0;
+
+    // Software reset
+    iowrite32(BIT(1), data->base + MCSPI_SYSCONFIG);
+    while (!(ioread32(data->base + MCSPI_SYSSTATUS) & BIT(0)))
+        cpu_relax();
+
+    // Configure SPI controller (slave mode)
+    iowrite32(MCSPI_MODULCTRL_MS, data->base + MCSPI_MODULCTRL);
+
+    chconf = ioread32(data->base + MCSPI_CHCONF0);
+    // Configure CHCONF1 for SPI1 (CS1)
+    chconf |= (8 - 1) << 7; // 8-bit word length
+
+    switch (config->mode){
+        case SPI_MODE_0: /* CPOL = 0, CPHA = 0 */
+            chconf &= ~MCSPI_CHCONF_POL; 
+            chconf &= ~MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_1: /* CPOL = 0, CPHA = 1 */
+            chconf &= ~MCSPI_CHCONF_POL; 
+            chconf |= MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_2: /* CPOL = 1, CPHA = 0 */
+            chconf |= MCSPI_CHCONF_POL; 
+            chconf &= ~MCSPI_CHCONF_PHA;
+            break;
+
+        case SPI_MODE_3: /* CPOL = 1, CPHA = 0 */
+            chconf |= MCSPI_CHCONF_POL; 
+            chconf |= MCSPI_CHCONF_PHA;
+            break;
+    }
+
+    chconf &= ~MCSPI_CHCONF_IS; // D0 as input (MISO)
+    chconf |= MCSPI_CHCONF_DPE0; // D0 not driven (MISO input)
+    chconf &= ~MCSPI_CHCONF_DPE1; // D1 as output (not use here)
+
+    chconf |= MCSPI_CHCONF_EPOL; // Active-low CS
+    chconf |= MCSPI_CHCONF_TRM_RX_ONLY; // Receive-only mode
+
+    chconf |= 1u << 28; // The FIFO buffer is used to receive data.
+
+    iowrite32(chconf, data->base + MCSPI_CHCONF0);
+
+
+    iowrite32(RX_TRIGGER << 8, data->base + MCSPI_XFERLEVEL); // interrupt at least 12 bytes
+
+    // Enable channel
+    iowrite32(MCSPI_CHCTRL_EN, data->base + MCSPI_CHCTRL0);
+
+    // Enable RX0_FULL interrupt
+    iowrite32(MCSPI_CHSTAT_RX0_FULL, data->base + MCSPI_IRQENABLE);
+}
 
 static void spi1_rx_dma_callback(void *data)
 {
@@ -181,7 +234,7 @@ free_buf:
     ch0cfg |= 0u << 15; // Disable DMA request read;
     iowrite32(ch0cfg, data->base + MCSPI_CHCONF0);
 
-    spi_hw_init(data);
+    spi_hw_init(data, data->pcfg);
 
     kfree(kbuf);
 
@@ -235,7 +288,7 @@ static irqreturn_t irqHandler(int irq, void *d)
             } while(data->rx_buffer[data->index-1] != 0x0a); // '\n'
 
             data->is_get_count = 0;
-            spi_hw_init(data);
+            spi_hw_init(data, data->pcfg);
 
             dev_info(data->dev, "[CPU] DMA read is done -> /dev/spi1\n");
 #else
@@ -243,7 +296,7 @@ static irqreturn_t irqHandler(int irq, void *d)
                 data->rx_buffer[data->index++] = ioread32(data->base + MCSPI_RX0);
             }   
 #endif /* FIFO_DRAINED */
-            spi_hw_init(data);
+            spi_hw_init(data, data->pcfg);
 
         }
 #else
@@ -287,68 +340,65 @@ static ssize_t spi_device_read(struct file *filp, char __user *buf, size_t count
 {
     struct spi_device_data *data = filp->private_data;
     int i;
+    unsigned int bytes_read = 0;
 
+    // copy_to_user will print the buf in the terminal
+    if (copy_to_user(buf, data->rx_buffer, data->index)) {
+        return -EFAULT;
+    }
+
+#if (PRINT_DEBUG_RX)
     // used for reading data in non-DMA mode
     for (i = 0; i < data->index; i++){
         dev_info(data->dev, "[%d]-> '%c'\n", i, data->rx_buffer[i]);
     }
+#endif
+
+    bytes_read = data->index;
 
     // back up
     data->index = 0;
     data->is_get_count = 0;
 
-    return 0;
+    printk("-> %d\n", data->index);
+    return bytes_read;
+}
+
+static long spi_device_ioctl(struct file *filp,
+                             unsigned int cmd,
+                             unsigned long arg)
+{
+    struct spi_device_data *spi = filp->private_data;
+    struct bbb_spi_config config;
+
+    switch (cmd) {
+    case BBB_SPI_SET_CONFIG:
+        if (copy_from_user(&config,
+                           (struct bbb_spi_config __user *)arg,
+                           sizeof(config))) {
+            return -EFAULT;
+        }
+
+        /*
+         * Apply the configuration to the SPI hardware.
+         */
+        spi_hw_init(spi, &config);
+        spi->pcfg = &config;
+
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
 }
 
 static const struct file_operations spi_device_fops = {
-    .owner = THIS_MODULE,
-    .open = spi_device_open,
-    .read = spi_device_read,
+    .owner =            THIS_MODULE,
+    .open =             spi_device_open,
+    .read =             spi_device_read,
+    .unlocked_ioctl =   spi_device_ioctl,
 };
 
-void spi_hw_init(struct spi_device_data *data){
-    u32 chconf = 0;
-
-    // Software reset
-    iowrite32(BIT(1), data->base + MCSPI_SYSCONFIG);
-    while (!(ioread32(data->base + MCSPI_SYSSTATUS) & BIT(0)))
-        cpu_relax();
-
-    // Configure SPI controller (slave mode)
-    iowrite32(MCSPI_MODULCTRL_MS, data->base + MCSPI_MODULCTRL);
-
-    chconf = ioread32(data->base + MCSPI_CHCONF0);
-    // Configure CHCONF1 for SPI1 (CS1)
-    chconf |= (8 - 1) << 7; // 8-bit word length
-    chconf &= ~MCSPI_CHCONF_POL; // SPI Mode 0
-    chconf &= ~MCSPI_CHCONF_PHA; // SPI Mode 0
-
-    chconf &= ~MCSPI_CHCONF_IS; // D0 as input (MISO)
-    chconf |= MCSPI_CHCONF_DPE0; // D0 not driven (MISO input)
-    chconf &= ~MCSPI_CHCONF_DPE1; // D1 as output (not use here)
-
-    chconf |= MCSPI_CHCONF_EPOL; // Active-low CS
-    chconf |= MCSPI_CHCONF_TRM_RX_ONLY; // Receive-only mode
-
-    chconf |= 1u << 28; // The FIFO buffer is used to receive data.
-
-    iowrite32(chconf, data->base + MCSPI_CHCONF0);
-
-
-    iowrite32(RX_TRIGGER << 8, data->base + MCSPI_XFERLEVEL); // interrupt at least 12 bytes
-
-    // Enable channel
-    iowrite32(MCSPI_CHCTRL_EN, data->base + MCSPI_CHCTRL0);
-
-    // Enable RX0_FULL interrupt
-    iowrite32(MCSPI_CHSTAT_RX0_FULL, data->base + MCSPI_IRQENABLE);
-
-        // chconf = ioread32(data->base + MCSPI_CHCONF0);
-        // chconf |= 1u << 15; // DMA request read;
-        // iowrite32(chconf, data->base + MCSPI_CHCONF0);
-
-        // schedule_work(&data->re_request_work);
-}
 #if (DMA_USED_RX)
 static int spi1_configure_dma(struct spi_device_data *data)
 {
@@ -416,8 +466,8 @@ static int spi_device_probe(struct platform_device *pdev)
     // Initialize workqueue
     INIT_WORK(&data->re_request_work, re_request_irq_work);
 
-    // hw init using registers
-    spi_hw_init(data);
+    // // hw init using registers
+    // spi_hw_init(data);
 
     // ========== Request IRQ (hwirq 125 for SPI1 on AM33xx) ==========
     data->irq = platform_get_irq(pdev, 0);

@@ -4,7 +4,7 @@
 /* ################# [SPI0_TX] ################# */
 /* USER CONTROL */
 #define DMA_USED_TX 1
-#define PRINT_DEBUG_TX 1 /* Print debug info print */
+#define PRINT_DEBUG_TX 0 /* Print debug info print */
 
 /* PROGRAM CONTROL */
 #if (DMA_USED_TX)

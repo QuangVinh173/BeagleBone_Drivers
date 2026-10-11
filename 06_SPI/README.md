@@ -1,30 +1,28 @@
-SPI for data transfer between master (spi0) ans slave (spi1) on the same board
+# BBB UART Driver
+UART communication between the BeagleBone Black (BBB) and a PC using Minicom.
 
-In main.h:
- - SPI0_TX:
- 	- DMA_USED_TX - used for DMA transfter for master spi0
- 	- PRINT_DEBUG_TX - used for printk for master spi0
- - SPI0_RX
- 	- DMA_USED_RX - used for DMA transfter for slave spi1
- 	- PRINT_DEBUG_RX - used for printk for slave spi1
- 	- FIFO_DRAINED - used for draining FIFO
- 
-SPI pins:
- - SPI0_TX:
-	- P9_17: spi0_cs0
-	- P9_21: spi0_d0 (MISO)
-	- P9_18: spi0_d1 (MOSI)
-	- P9_22: spi0_sclk
- - SPI0_RX:
-	- P9_28: spi1_cs0
-	- P9_29: spi1_d0 (MISO)
-	- P9_30: spi1_d1 (MOSI)
-	- P9_31: spi1_sclk
- 
-Test:
- - Write data into /dev/spi0: 'echo "Hi everyone!" | sudo tee /dev/spi0'
- - Read data from /dev/spi1: 'sudo cat /dev/spi1'
+## UART Pin Configuration
+- **P9_26**: UART1_RXD
+- **P9_24**: UART1_TXD
 
-Can use TX (non-dma or dma) with RX (non-dma or dma) with some notes below due to constrains when running master and slave spi on the same BBB board:
- - TX(non-dma) and RX(non-dma) -> not using FIFO_DRAINED
- - TX(dma) and RX(non-dma) -> should use FIFO_DRAINED
+Connect the BBB UART pins to the corresponding RX/TX pins on the USB-to-UART adapter, and connect GND between the devices.
+
+## Setup
+1. Build and load the kernel driver in `kernel/`.
+2. Build the C++ application in `application/`.
+3. Connect the BBB to the PC using a USB-to-UART adapter.
+
+## Testing
+- On PC, run 'minicom -D /dev/ttyUSBX -b <baundrate>'
+- On BBB, build and run main.cpp 
+
+## Testing
+- Connect TX pin (yellow wire) and RX pin (blue wire) on BBB to USB-to-UART adapter
+<img src="images/connection.png" alt="images" width="500">
+
+## Output
+- Uart for sending data to PC:
+<img src="images/send.png" alt="images" width="500">
+
+- Uart for reading data from PC:
+<img src="images/read.png" alt="images" width="500">
