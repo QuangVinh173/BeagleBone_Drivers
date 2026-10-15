@@ -50,19 +50,6 @@ Wire the signals between the controllers according to their roles: SPI0 MOSI (`P
    send <message>
    ```
 
-## DMA / FIFO Configuration Notes
-
-The available TX/RX combinations have the following known constraints when both SPI controllers run on the same BBB board:
-
-| SPI0 TX mode | SPI1 RX mode | `FIFO_DRAINED` |
-|---|---|---|
-| Non-DMA | Non-DMA | Do not use |
-| DMA | Non-DMA | Should be enabled |
-| Non-DMA | DMA | Verify with the current driver configuration |
-| DMA | DMA | Verify with the current driver configuration |
-
-The behavior of the last two combinations is not specified here; validate them on the target board before relying on them. `DMA_USED_TX` controls the TX mode and `DMA_USED_RX` controls the RX mode. `FIFO_DRAINED` is an RX-side option for handling the FIFO under the noted same-board timing constraints.
-
 ## Output
 
 Test output should show the transmitted message on the TX side and the corresponding received message and byte count on the RX side. The screenshots can be added here when available.
