@@ -15,6 +15,7 @@ struct bbb_spi_config {
     __u8 clk_divided;
     spi_mode mode;
     bool use_dma;
+    int FIFO_trigger;
 };
 
 #define BBB_SPI_IOC_MAGIC 'U'

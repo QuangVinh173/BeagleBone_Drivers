@@ -12,9 +12,10 @@ int main() {
 
     // Initialize SPI 
     struct bbb_spi_config config = {
-        .clk_divided = 6,
+        .clk_divided = 6, /* Divide by 64 (2^6 = 64) -> clk =  48 000 000 / 64 = 750 000 Hz */
         .mode = SPI_MODE_0,
         .use_dma = true,
+        .FIFO_trigger = 1,
     };
 
     if (!spi.init(&config)) {

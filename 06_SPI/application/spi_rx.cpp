@@ -14,7 +14,8 @@ int main() {
     struct bbb_spi_config config = {
         /* follow master clk */
         .mode = SPI_MODE_0, /* match with master */
-        .use_dma = true,
+        .use_dma = false,
+        .FIFO_trigger = 1,
     };
 
     if (!spi.init(&config)) {
@@ -28,7 +29,7 @@ int main() {
     char buffer[256] = {0};
 
     std::cout << "Commands:\n";
-    std::cout << "  send <message>   - Send message to SPI\n";
+    std::cout << "  recv             - Read once\n";
     std::cout << "  quit             - Exit\n\n";
 
     while (true) {

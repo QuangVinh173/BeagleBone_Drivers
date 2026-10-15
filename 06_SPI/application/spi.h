@@ -1,49 +1,40 @@
-#ifndef SPI_H
-#define SPI_H
+#ifndef UART_H
+#define UART_H
 
 #include <string>
 #include <cstdint>
 #include <linux/ioctl.h>
 #include <linux/types.h>
 
-enum spi_mode {
-    SPI_MODE_0, /* CPOL = 0, CPHA = 0 */
-    SPI_MODE_1, /* CPOL = 0, CPHA = 1 */
-    SPI_MODE_2, /* CPOL = 1, CPHA = 0 */
-    SPI_MODE_3, /* CPOL = 1, CPHA = 1 */
+struct bbb_uart_config {
+    __u32 baudrate;
 };
 
-struct bbb_spi_config {
-    __u8 clk_divided;
-    spi_mode mode;
-    bool use_dma;
-};
+#define BBB_UART_IOC_MAGIC 'U'
 
-#define BBB_SPI_IOC_MAGIC 'U'
-
-#define BBB_SPI_SET_CONFIG \
-    _IOW(BBB_SPI_IOC_MAGIC, 1, struct bbb_spi_config)
+#define BBB_UART_SET_CONFIG \
+    _IOW(BBB_UART_IOC_MAGIC, 1, struct bbb_uart_config)
 
 
-class Spi {
+class Uart {
 private:
     int fd = -1;
     std::string device_path;
 
 public:
-    Spi(const std::string& dev_path);
-    ~Spi();                    // Automatic cleanup in destructor
+    Uart(const std::string& dev_path = "/dev/uart1");
+    ~Uart();                    // Automatic cleanup in destructor
 
     // Disable Copy Semantics (important for classes holding file descriptors)
-    Spi(const Spi&) = delete;
-    Spi& operator=(const Spi&) = delete;
+    Uart(const Uart&) = delete;
+    Uart& operator=(const Uart&) = delete;
 
     // Enable Move Semantics
-    Spi(Spi&& other) noexcept;
-    Spi& operator=(Spi&& other) noexcept;
+    Uart(Uart&& other) noexcept;
+    Uart& operator=(Uart&& other) noexcept;
 
     // Initialize (open the device)
-    bool init(struct bbb_spi_config *config);
+    bool init(struct bbb_uart_config *config);
 
     // De-initialize (close the device)
     void deinit();
@@ -54,10 +45,13 @@ public:
 
     // Read data
     ssize_t read(void* buffer, size_t length);
+    
+    // Convenience: Read with timeout (in milliseconds)
+    ssize_t readTimeout(void* buffer, size_t length, int timeout_ms);
 
     bool isOpen() const { return fd >= 0; }
     std::string getDevicePath() const { return device_path; }
 };
 
-#endif // SPI_H
+#endif // UART_H
 
