@@ -46,8 +46,8 @@ Connect the BBB I2C1 pins to the corresponding SCL and SDA pins on the DS3231 mo
 The application reports whether time-setting succeeds and displays the time read from the DS3231. In monitor mode, it prints the RTC time repeatedly at approximately one-second intervals.
 
 - Set time, Read time, Monitor time:
-  <img src="images/timeget.png" alt="Set DS3231 time" width="500">
+<img src="images/timeget.png" alt="Set DS3231 time" width="500">
   
 - Logic analyzer:
-  <img src="images/ds3231.png" alt="Set DS3231 time" width="500">
+<img src="images/ds3231.png" alt="Set DS3231 time" width="500">
 
