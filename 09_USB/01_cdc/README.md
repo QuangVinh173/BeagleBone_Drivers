@@ -26,6 +26,10 @@ Run the application on the BBB:
 
 Choose an option from the menu. The option numbers below correspond to the USB CDC application menu in `main.cpp`.
 
+Connection:
+
+<img src="images/connection.png.png" alt="connection" width="700">
+
 ## Menu Options and Output
 
 ### Option 1 — Check connection
