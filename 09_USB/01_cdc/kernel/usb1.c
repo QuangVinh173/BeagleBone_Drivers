@@ -10,7 +10,6 @@
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <linux/atomic.h>
-#include <linux/delay.h>
 #include "usb1.h"
 #include "main.h"
 
@@ -72,7 +71,8 @@ const u8 SetCoding_pkt[8] = {
 };
 
 const u8 SetCodingData[] = {
-    0x80, 0x25, 0x00, 0x00,  // Baud: 9600 (little-endian DWORD)
+    // 0x80, 0x25, 0x00, 0x00,  // Baud: 9600 (little-endian DWORD)
+    0x00, 0xC2, 0x01, 0x00,  // Baud: 115200 (little-endian DWORD)
     0x00,                    // Stop bits: 0 (1 stop bit)
     0x00,                    // Parity: 0 (none)
     0x08                     // Data bits: 8
@@ -86,7 +86,7 @@ const u8 SetCtrlLine_pkt[8] = {
     0x00, 0x00   // wLength: 0
 };
 
-/* ================== Tmp variables ================= */
+/* Transfer state shared with the IRQ handler. */
 u16 Tx1_flag = 0, Rx1_flag = 0;
 u8 ret;
 u16 count;
@@ -127,41 +127,94 @@ u32 fifo_offset(u8 epnum)
 	return 0x20 + (epnum * 4); // @1C20
 }
 
-void CpyMem(u8* dst, u8* src, u32 len){
-    u32 i = 0;
-    for (i = 0; i < len; i++){
+static void copy_bytes(u8 *dst, const u8 *src, u32 len)
+{
+    u32 i;
+
+    for (i = 0; i < len; i++)
         dst[i] = src[i];
-    }
 }
 
-int wait_register_update(struct usb_device_data *data, void __iomem *mem, u16 reg_offset, u16 bit_offset, u8 bit_val, u16 delay_ms, u8* name_register){
-    unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
+int wait_register_update(struct usb_device_data *data,
+                         void __iomem *mem,
+                         u16 reg_offset,
+                         u16 bit_offset,
+                         u8 bit_val,
+                         u16 delay_ms,
+                         u8 *name_register)
+{
+    long ret;
+    u32 mask;
+    u32 expected;
+    void __iomem *reg;
 
-    while ((ioread32(mem + reg_offset)&(1u << bit_offset)) != (bit_val << bit_offset))  // Wait register updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_register);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+    if (!data || !mem || bit_offset >= 32 || bit_val > 1)
+        return -EINVAL;
+
+    reg = (u8 __iomem *)mem + reg_offset;
+    mask = BIT(bit_offset);
+    expected = bit_val ? mask : 0;
+
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (ioread32(reg) & mask) == expected,
+        msecs_to_jiffies(delay_ms)
+    );
+
+    if (ret < 0) {
+        dev_info(data->dev,
+                "Wait for register %s interrupted: %ld\n",
+                name_register, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        dev_err(data->dev,
+                "Reg Timeout %s: bit %u expected %u\n",
+                name_register, bit_offset, bit_val);
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
 
-int wait_val_update(struct usb_device_data *data, u16* var, u16 val, u16 delay_ms, u8* name_val){
+int wait_val_update(
+    struct usb_device_data *data,
+    u16 *var,
+    u16 val,
+    u16 delay_ms,
+    u8* name_val)
+{
+    long ret;
     unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
 
-    while (*var != val)  // Wait val updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_val);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+    if (!data || !var || val == 0)
+        return -EINVAL;
+
+    timeout = msecs_to_jiffies(delay_ms);
+
+    /*
+     * Sleep until the requested event bit is set,
+     * a signal interrupts the wait, or timeout expires.
+     */
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (READ_ONCE(*var) & val) != 0,
+        timeout);
+
+    if (ret < 0) {
+        // dev_info(data->dev,
+        //          "Val - Wait for %s interrupted: %ld\n",
+        //          name_val, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        // dev_err(data->dev,
+        //         "Val - Timeout waiting for %s (mask=0x%04x, flags=0x%04x)\n",
+        //         name_val, val, READ_ONCE(*var));
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
@@ -204,9 +257,14 @@ u32 USB1_ReadFIFO(struct usb_device_data *data, u8 epnum){
     return ioread32(data->base_usb1core + FIFO0_offset);
 }
 
-void USB1_WriteDataFIFO(struct usb_device_data *data, u8 epnum, u32 dataX){
+u8 USB1_ReadU8FIFO(struct usb_device_data *data, u8 epnum){
     u32 FIFO0_offset = fifo_offset(epnum);
-    iowrite32(dataX, data->base_usb1core + FIFO0_offset);
+    return ioread8(data->base_usb1core + FIFO0_offset);
+}
+
+void USB1_WriteU8DataFIFO(struct usb_device_data *data, u8 epnum, u8 dataX){
+    u32 FIFO0_offset = fifo_offset(epnum);
+    iowrite8(dataX, data->base_usb1core + FIFO0_offset);
 }
 
 /* ================== Handler =================*/
@@ -232,7 +290,6 @@ irqreturn_t USB1_handler(int irq, void *d){
     u32 irqst0, irqst1;
     u16 int_tx, int_rx;
 
-
     irqst0 = ioread32(data->base_usb1ctl + USB1CTL_IRQST0);
     irqst1 = ioread32(data->base_usb1ctl + USB1CTL_IRQST1);
     int_tx = irqst0&0xFF;
@@ -246,17 +303,23 @@ irqreturn_t USB1_handler(int irq, void *d){
 
     if (irqst0){
         if (int_tx){
-            Tx1_flag = 1;
+            WRITE_ONCE(Tx1_flag, READ_ONCE(Tx1_flag) | int_tx);
 #if (PRINT_DEBUG)
             printk("ISR -> TX[0x%x]\n", int_tx);
 #endif
         }
         if (int_rx){
-            Rx1_flag = 1;
+            WRITE_ONCE(Rx1_flag, READ_ONCE(Rx1_flag) | int_rx);
 #if (PRINT_DEBUG)
             printk("ISR -> RX[0x%x]\n", int_rx);
 #endif
         }
+
+        /*
+        * Notify threads waiting for USB endpoint events.
+        */
+        if (int_tx || int_rx)
+            wake_up_interruptible(&data->irq_wait);
     }
     if (irqst1){
         if ((irqst1)&(1u << 7)){
@@ -267,9 +330,12 @@ irqreturn_t USB1_handler(int irq, void *d){
         } 
         if ((irqst1)&(1u << 4)){
             printk("Device connected\n");
-        }   
+            schedule_work(&data->descriptor_work);
+        }
+            
         if ((irqst1)&(1u << 5)){
             printk("Device disconnected\n");
+            schedule_work(&data->descriptor_clear_work);
         }     
         if ((irqst1)&(1u << 8)){
             printk("DRVVBUS level change\n");
@@ -277,14 +343,6 @@ irqreturn_t USB1_handler(int irq, void *d){
         if ((irqst1)&(1u << 6)){
             printk("SRF ...\n");
         }    
-    }
-
-    data->count_many++;
-    if (data->count_many > 100){
-        printk("Too many interrupts\n");
-        data->count_many = 0;
-
-        USB1_reset(data);
     }
 
     return IRQ_HANDLED;
@@ -316,7 +374,6 @@ int USB1_init(struct usb_device_data *data){
     iowrite32(1u << 7, data->base_usb1ctl + USB1CTL_MODE); // host mode by sw
 
     // test mode
-    //iowrite8(MUSB_TEST_FORCE_HOST, data->base_usb1core + MUSB_TESTMODE);
 
     // enable all interrupts after session
     iowrite32(0xFFFEFFFF, data->base_usb1ctl + USB1CTL_IRQEN0);
@@ -354,7 +411,7 @@ void PHY1_init(struct usb_device_data *data){
     msleep(1); // Give the PHY ~1ms to complete the power up operation.
 }
 
-void USB1_exit(struct usb_device_data *data){
+void USB1_deinit(struct usb_device_data *data){
     iowrite32(0x1ff, data->base_usb1ctl + USB1CTL_COREINT_CLR);
     iowrite32(0xfffeffff, data->base_usb1ctl + USB1CTL_EPINT_CLR);
 	
@@ -371,6 +428,19 @@ void USB1_exit(struct usb_device_data *data){
     iowrite8(0, data->base_usb1core + MUSB_DEVCTL);
 }
 
+void PHY1_deinit(struct usb_device_data *data){
+    u32 usb1_ctrl = 0;
+
+    // return 0 if not clocked
+    usb1_ctrl = ioread32(data->base_usb1ctl + USB1CTL_REV);
+    if (!usb1_ctrl){
+        printk("REV = 0 -> error\n");
+        return;
+    }
+
+    iowrite32(0, data->base_con_usb1ctrl1 + USB_CTRL1);
+}
+
 /* ================== API for Control Transfer ===================== */
 /* First, reset */
 void USB1_Reset_Speed(struct usb_device_data *data){
@@ -384,6 +454,9 @@ void USB1_Reset_Speed(struct usb_device_data *data){
     if (devctl&MUSB_DEVCTL_FSDEV) printk("Full speed\n");
     else if (devctl&MUSB_DEVCTL_LSDEV) printk("Low speed\n");
     else printk("Undefined speed\n");
+
+    if (devctl&MUSB_DEVCTL_FSDEV) data->full_speed = true;
+    else data->full_speed = false;
 
     // set ptr
     data->DeviceDescriptorPtr = (u8*)(&data->InsDeviceDescriptor);
@@ -410,7 +483,8 @@ int USB1_SETUP_Phase_GetDesc(struct usb_device_data *data, const u8* pkt, u16 ad
     host_csr0 |= MUSB_CSR0_H_SETUPPKT | MUSB_CSR0_TXPKTRDY; // Set SETUPPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1");
+    // wait for INT endpoint 0
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -451,13 +525,11 @@ int USB1_IN_Phase_GetDesc(struct usb_device_data *data){
     iowrite16(MUSB_CSR0_H_REQPKT, data->base_usb1core + 0x10 + MUSB_CSR0);
 
     // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "IN: Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "IN: Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
     
     count = ioread16(data->base_usb1core + 0x10 + MUSB_COUNT0)&0xFFFF;
-    // printk("ret = 0x%x, count = 0x%x\n", ret, count);
-
     host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_CSR0)&0xFF;
     // Check error
     if (host_csr0 == MUSB_CSR0_H_RXSTALL) {
@@ -480,19 +552,19 @@ int USB1_IN_Phase_GetDesc(struct usb_device_data *data){
         tmp[1] = USB1_ReadFIFO(data, 0);
 
         if (count == 8) {
-            CpyMem(data->DeviceDescriptorPtr, (u8*)&tmp[0], 4);
+            copy_bytes(data->DeviceDescriptorPtr, (const u8 *)&tmp[0], 4);
             data->DeviceDescriptorPtr+=4;
-            CpyMem(data->DeviceDescriptorPtr, (u8*)&tmp[1], 4);
+            copy_bytes(data->DeviceDescriptorPtr, (const u8 *)&tmp[1], 4);
             data->DeviceDescriptorPtr+=4;
         }
         else if (count <= 4){
-            CpyMem(data->DeviceDescriptorPtr, (u8*)&tmp[0], count);
+            copy_bytes(data->DeviceDescriptorPtr, (const u8 *)&tmp[0], count);
             data->DeviceDescriptorPtr+=(count);
         }
         else {
-            CpyMem(data->DeviceDescriptorPtr, (u8*)&tmp[0], 4);
+            copy_bytes(data->DeviceDescriptorPtr, (const u8 *)&tmp[0], 4);
             data->DeviceDescriptorPtr+=4;
-            CpyMem(data->DeviceDescriptorPtr, (u8*)&tmp[1], count - 4);
+            copy_bytes(data->DeviceDescriptorPtr, (const u8 *)&tmp[1], count - 4);
             data->DeviceDescriptorPtr+=(count - 4);
         }
 
@@ -523,7 +595,8 @@ int USB1_STATUS_Phase_GetDesc(struct usb_device_data *data){
     host_csr0 |= MUSB_CSR0_H_STATUSPKT | MUSB_CSR0_TXPKTRDY; // Set STATUSPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1");
+    // wait for INT endpoint 0
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -566,7 +639,8 @@ int USB1_SETUP_Phase_SetAddr(struct usb_device_data *data, const u8* pkt, u16 ad
     host_csr0 |= MUSB_CSR0_H_SETUPPKT | MUSB_CSR0_TXPKTRDY; // Set SETUPPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1 vvv");
+    // wait for INT endpoint 0
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1 vvv");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -595,25 +669,20 @@ int USB1_SETUP_Phase_SetAddr(struct usb_device_data *data, const u8* pkt, u16 ad
 int USB1_OUT_Phase_GetDesc(struct usb_device_data *data, const u8* dataX, u32 len){
     u16 host_csr0 = 0;
     int ret = 0, i = 0;
-    u32 tmp[2] = {0};
+    int epointNum = 0;
 
     for (i = 0; i < len; i++){
-        if (i < 4) tmp[0] |= (dataX[i] << (i*8));
-        else tmp[1] |= (dataX[i] << ((i - 4)*8));
+        USB1_WriteU8DataFIFO(data, epointNum, dataX[i]);
     }
-    USB1_WriteDataFIFO(data, 0, tmp[0]);
-    USB1_WriteDataFIFO(data, 0, tmp[1]);
 
     iowrite16(MUSB_CSR0_TXPKTRDY, data->base_usb1core + 0x10 + MUSB_CSR0);
 
     // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "IN: Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(epointNum), 2000, "IN: Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
     
     count = ioread16(data->base_usb1core + 0x10 + MUSB_COUNT0)&0xFFFF;
-    // printk("ret = 0x%x, count = 0x%x\n", ret, count);
-
     host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_CSR0)&0xFF;
     // Check error
     if (host_csr0 == MUSB_CSR0_H_RXSTALL) {
@@ -640,7 +709,8 @@ int USB1_STATUS_Phase_SetAddr(struct usb_device_data *data){
     host_csr0 = MUSB_CSR0_H_STATUSPKT | MUSB_CSR0_H_REQPKT; // Set STATUSPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1 yyy");
+    // wait for INT endpoint 0
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1 yyy");
     Tx1_flag = 0;
     if (ret < 0) {
         return -1;
@@ -648,6 +718,7 @@ int USB1_STATUS_Phase_SetAddr(struct usb_device_data *data){
 
     host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_CSR0)&0xFF;
     //printk("ret = %x\n", host_csr0);
+
     // Check error for sending SETUP stage
     if (host_csr0 == MUSB_CSR0_H_RXSTALL) {
         dev_info(data->dev, "RXSTALL\n");
@@ -658,7 +729,7 @@ int USB1_STATUS_Phase_SetAddr(struct usb_device_data *data){
         return -1;
     }
     if (host_csr0 == MUSB_CSR0_H_NAKTIMEOUT) {
-        dev_info(data->dev, "NAK_TIMEOUT\n"); // .... consider later
+        dev_info(data->dev, "NAK_TIMEOUT\n"); 
         return -1;
     } 
     else if (host_csr0&MUSB_CSR0_RXPKTRDY) {
@@ -715,46 +786,46 @@ int USB1_GetDesc_Transfer(struct usb_device_data *data){
     int ret;
 
     /* Getting descriptor with default address 0 */
-    ret = USB1_READ_Transaction(data, GetDesc_pkt, 0x0, "GetDesc_pkt");
+    ret = USB1_READ_Transaction(data, GetDesc_pkt, DEFAULT_ADDR, "GetDesc_pkt");
 
     /* Setting address 0x1 with default address 0 */
     if (ret == 0){
-        ret = USB1_WRITE_Transaction(data, SetAddr_pkt, 0x0, NULL, 0, "SetAddr_pkt");
+        ret = USB1_WRITE_Transaction(data, SetAddr_pkt, DEFAULT_ADDR, NULL, 0, "SetAddr_pkt");
     }
 
     /* Getting descriptor with new address 0x1 */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDesc_pkt, 0x1, "GetDesc_pkt");
+        ret = USB1_READ_Transaction(data, GetDesc_pkt, ARDUINO_DEVICE_ADDR, "GetDesc_pkt");
     }
 
     /* Getting descriptor with new address 0x1 */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDesc_pkt2, 0x1, "GetDesc_pkt2");
+        ret = USB1_READ_Transaction(data, GetDesc_pkt2, ARDUINO_DEVICE_ADDR, "GetDesc_pkt2");
     }
 
     /* Getting descriptor (Interface 0: Communications Class (CDC)) with new address 0x1 */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDescif0_pkt, 0x1, "GetDescif0_pkt");
+        ret = USB1_READ_Transaction(data, GetDescif0_pkt, ARDUINO_DEVICE_ADDR, "GetDescif0_pkt");
     }
 
     /* Setting configuration with new address 0x1 */
     if (ret == 0){
-        ret = USB1_WRITE_Transaction(data, SetConf_pkt, 0x1, NULL, 0, "SetConf_pkt");
+        ret = USB1_WRITE_Transaction(data, SetConf_pkt, ARDUINO_DEVICE_ADDR, NULL, 0, "SetConf_pkt");
     }
 
     /* Getting configuration with new address 0x1, data recieved should be 0x1 */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetConf_pkt, 0x1, "GetConf_pkt");
+        ret = USB1_READ_Transaction(data, GetConf_pkt, ARDUINO_DEVICE_ADDR, "GetConf_pkt");
     }
 
     /* Setting line coding with new address 0x1 */
     if (ret == 0){
-        ret = USB1_WRITE_Transaction(data, SetCoding_pkt, 0x1, SetCodingData, 7, "SetCoding_pkt");
+        ret = USB1_WRITE_Transaction(data, SetCoding_pkt, ARDUINO_DEVICE_ADDR, SetCodingData, 7, "SetCoding_pkt");
     }
 
     /* Setting control line coding with new address 0x1 */
     if (ret == 0){
-        ret = USB1_WRITE_Transaction(data, SetCtrlLine_pkt, 0x1, NULL, 0, "SetCtrlLine_pkt");
+        ret = USB1_WRITE_Transaction(data, SetCtrlLine_pkt, ARDUINO_DEVICE_ADDR, NULL, 0, "SetCtrlLine_pkt");
     }
 
     return ret;
@@ -827,17 +898,38 @@ void USB1_Print_DeviceDescriptorIf0(struct usb_device_data *data){
     printk("# ----------------------------------- #\n");
 }
 
+void USB1_PrintCoreConfig(struct usb_device_data *data)
+{
+    void __iomem *core = data->base_usb1core;
+    u8 cfg, raminfo;
+ 
+    setIndex(data, 0);                                /* required: CONFIGDATA only at INDEX 0 */
+    cfg     = ioread8(core + 0x10 + MUSB_CONFIGDATA); /* 0x1F */
+    raminfo = ioread8(core + 0x79);                   /* RAMINFO */
+ 
+    dev_info(data->dev, "CONFIGDATA = 0x%02x\n", cfg);
+    dev_info(data->dev, "  Dynamic FIFO : %s\n",
+             (cfg & MUSB_CONFIGDATA_DYNFIFO) ? "yes" : "no");
+    dev_info(data->dev, "  Bulk split TX: %s, combine RX: %s\n",
+             (cfg & MUSB_CONFIGDATA_MPTXE) ? "yes" : "no",
+             (cfg & MUSB_CONFIGDATA_MPRXE) ? "yes" : "no");
+    dev_info(data->dev, "  UTMI width   : %d-bit\n",
+             (cfg & MUSB_CONFIGDATA_UTMIDW) ? 16 : 8);
+    dev_info(data->dev, "FIFO RAM = %u bytes, DMA channels = %u\n",
+             (1u << (raminfo & 0x0F)) * 4, raminfo >> 4);
+}
+
 /* ================== Utils for bulk transfer ===================== */
 
 /* TX */
 void USB1_Bulk_SetAddrTx(struct usb_device_data *data, u8 addr, u8 epnum){
     iowrite16(addr, data->base_usb1core + MUSB_TXFUNCADDR + (0x08 * epnum));
 }
-void USB1_Bulk_SetTypeTx(struct usb_device_data *data, u8 epnum, u8 speed){
+void USB1_Bulk_SetTypeTx(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
     u8 TxType = 0;
 
     TxType = (speed << 6)&MUSB_TYPE_SPEED;
-    TxType |= (0x2 << 4)&MUSB_TYPE_PROTO; // bulk type
+    TxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // bulk type
     TxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
 
     iowrite8(TxType, data->base_usb1core + 0x10 + MUSB_TXTYPE);
@@ -861,11 +953,11 @@ void USB1_Bulk_SetTXCSR(struct usb_device_data *data){
 void USB1_Bulk_SetAddrRx(struct usb_device_data *data, u8 addr, u8 epnum){
     iowrite16(addr, data->base_usb1core + MUSB_RXFUNCADDR + (0x08 * epnum));
 }
-void USB1_Bulk_SetTypeRx(struct usb_device_data *data, u8 epnum, u8 speed){
+void USB1_Bulk_SetTypeRx(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
     u8 RxType = 0;
 
     RxType = (speed << 6)&MUSB_TYPE_SPEED;
-    RxType |= (0x2 << 4)&MUSB_TYPE_PROTO; // bulk type
+    RxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // bulk type
     RxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
 
     iowrite8(RxType, data->base_usb1core + 0x10 + MUSB_RXTYPE);
@@ -877,107 +969,229 @@ void USB1_Bulk_SetRxInterval(struct usb_device_data *data, u8 rxInterval){
     iowrite8(rxInterval, data->base_usb1core + 0x10 + MUSB_RXINTERVAL);
 }
 
+void USB1_SetupBulkFifos(struct usb_device_data *data, u8 ep_out, u8 ep_in)
+{
+    void __iomem *core = data->base_usb1core;
+    u16 MaxPacketSzTX, TXInterval;
+    u8 transfer_typeTX;
+    u16 MaxPacketSzRX, RXInterval;
+    u8 transfer_typeRX;
+
+    // TX
+    MaxPacketSzTX = data->InsDeviceDescriptor.ep_bulk_out_wMaxPacketSize;
+    TXInterval = data->InsDeviceDescriptor.ep_bulk_out_bInterval;
+    transfer_typeTX = data->InsDeviceDescriptor.ep_bulk_out_bmAttributes;
+
+    // RX
+    MaxPacketSzRX = data->InsDeviceDescriptor.ep_bulk_in_wMaxPacketSize;
+    RXInterval = data->InsDeviceDescriptor.ep_bulk_in_bInterval;
+    transfer_typeRX = data->InsDeviceDescriptor.ep_bulk_in_bmAttributes;
+ 
+    // ====================================
+    setIndex(data, ep_out);                              /* EP4 TX */
+    iowrite8(3, core + MUSB_TXFIFOSZ);                   /* 64 bytes */
+    iowrite16(64 >> 3, core + MUSB_TXFIFOADD);           /* RAM 64..127 */
+    //iowrite16(MUSB_TXCSR_MODE | MUSB_TXCSR_CLRDATATOG, core + 0x10 + MUSB_TXCSR);
+
+    USB1_Bulk_SetAddrTx(data, ARDUINO_DEVICE_ADDR, ep_out);
+    USB1_Bulk_SetTypeTx(data, ep_out, (data->full_speed) ? FULL_SPEED : LOW_SPEED, transfer_typeTX); 
+    USB1_Bulk_SetTxMaxp(data, MaxPacketSzTX); // max packet is 64 bytes
+    USB1_Bulk_SetTxInterval(data, TXInterval); // as ep_bulk_out_bInterval = 0x1
+    USB1_Bulk_SetTXCSR(data);
+
+    // ======================================
+
+    setIndex(data, ep_in);  
+    iowrite8(3, core + MUSB_RXFIFOSZ);                   /* 64 bytes */
+    iowrite16(128 >> 3, core + MUSB_RXFIFOADD);          /* RAM 128..191 */
+    //iowrite16(MUSB_RXCSR_CLRDATATOG, core + 0x10 + MUSB_RXCSR);
+
+    USB1_Bulk_SetAddrRx(data, ARDUINO_DEVICE_ADDR, ep_in);
+    USB1_Bulk_SetTypeRx(data, ep_in, (data->full_speed) ? FULL_SPEED : LOW_SPEED, transfer_typeRX); 
+    USB1_Bulk_SetRxMaxp(data, MaxPacketSzRX); // max packet (usually 64 byres)
+    USB1_Bulk_SetRxInterval(data, RXInterval); // as ep_bulk_in_bInterval = 0x1
+}
+
+
+
+static void USB1_TxFlush(struct usb_device_data *data, u8 epnum)
+{
+    void __iomem *csr = data->base_usb1core + 0x10 + MUSB_TXCSR;
+    u16 v;
+    int i;
+ 
+    setIndex(data, epnum);
+    for (i = 0; i < 2; i++) {                 /* 2× for double buffering */
+        v = ioread16(csr);
+        if (!(v & (MUSB_TXCSR_TXPKTRDY | MUSB_TXCSR_FIFONOTEMPTY)))
+            break;                             /* nothing loaded: don't flush */
+        
+        printk("USB1_TxFlush - Flush\n");
+        v &= ~(MUSB_TXCSR_H_RXSTALL | MUSB_TXCSR_H_ERROR | MUSB_TXCSR_H_NAKTIMEOUT);
+        v |= MUSB_TXCSR_FLUSHFIFO;
+        iowrite16(v, csr);
+        udelay(1);
+    }
+
+    Tx1_flag &= ~BIT(epnum); 
+    //flag_clear(&Tx1_flag, BIT(epnum));         /* drop the interrupt the flush raised */
+}
+
+static void USB1_TxAbort(struct usb_device_data *data, u8 epnum)
+{
+    void __iomem *csr = data->base_usb1core + 0x10 + MUSB_TXCSR;
+    u16 v;
+    int i;
+ 
+    setIndex(data, epnum);
+    for (i = 0; i < 2; i++) {                       /* twice: handles double-buffering */
+        v = ioread16(csr);
+        v &= ~(MUSB_TXCSR_H_RXSTALL | MUSB_TXCSR_H_ERROR | MUSB_TXCSR_H_NAKTIMEOUT);
+        v |= MUSB_TXCSR_FLUSHFIFO | MUSB_TXCSR_TXPKTRDY;
+
+        printk("USB1_TxAbort - Flush\n");
+        iowrite16(v, csr);
+    }
+}
 
 /* ================== API for Bulk Transfer ===================== */
 int USB1_OUT_Phase_Bulk(struct usb_device_data *data, u8 epnum, u8 addr, const u8* dataX, u32 len){
     u16 host_csr0 = 0, txcsr = 0;
     int ret = 0, i = 0;
-    u32 tmp[16] = {0}; // holp up to 64 bytes
+    u16 MaxPacketSz, TXInterval;
+    u8 transfer_type;
+    u32 offset = 0;
+
+    MaxPacketSz = data->InsDeviceDescriptor.ep_bulk_out_wMaxPacketSize;
+    TXInterval = data->InsDeviceDescriptor.ep_bulk_out_bInterval;
+    transfer_type = data->InsDeviceDescriptor.ep_bulk_out_bmAttributes;
 
     setIndex(data, epnum);
-    // TX
-    iowrite8(3, data->base_usb1core + MUSB_TXFIFOSZ); // sz = 3 -> fifo size = 2^(sz+3) = 64 bytes for RX FIFO0
-    iowrite16(0x00, data->base_usb1core + MUSB_TXFIFOADD); 
 
-    USB1_Bulk_SetAddrTx(data, addr, epnum);
-    USB1_Bulk_SetTypeTx(data, epnum, 0x2); // 0x2 = full speed
-    USB1_Bulk_SetTxMaxp(data, 0x40); // max packet is 64 bytes
-    USB1_Bulk_SetTxInterval(data, 0x1); // as ep_bulk_out_bInterval = 0x1
-    USB1_Bulk_SetTXCSR(data);
+    while (offset < len) {
+        u32 packet_len = min_t(u32, MaxPacketSz, len - offset);
 
-    for (i = 0; i < len; i++){
-        tmp[i/4] |= (dataX[i] << (i%4)*8);
+        // /*
+        // * Wait until the preceding packet is no longer
+        // * occupying the transmit FIFO.
+        // */
+        // ret = USB1_WaitTxFifoEmpty(data, epnum, 2000);
+        // if (ret < 0)
+        //     return ret;
+
+        USB1_TxFlush(data, epnum);
+
+        printk("packet_len = %d\n", packet_len);
+
+        /* Load one packet into the TX FIFO. */
+        for (i = 0; i < packet_len; i++) {
+            USB1_WriteU8DataFIFO(data, epnum, dataX[offset + i]);
+        }
+
+        /* 1. Forget any old event. */
+        Tx1_flag &= ~BIT(epnum); 
+
+        /* 2. Start transmission of this packet. */
+        txcsr = ioread16(data->base_usb1core +
+                        0x10 + MUSB_TXCSR);
+
+        txcsr |= MUSB_TXCSR_TXPKTRDY |
+                MUSB_TXCSR_H_WZC_BITS;
+
+
+        iowrite16(txcsr, data->base_usb1core +
+                        0x10 + MUSB_TXCSR);
+
+        printk("txcsr = 0x%x\n", txcsr);
+
+        /* 3. Wait for this endpoint's TX interrupt. */
+        ret = wait_val_update(data, &Tx1_flag,
+                            BIT(epnum), 2000,
+                            "OUT Bulk: Data0/1");
+
+        if (ret < 0){
+            USB1_TxAbort(data, epnum);
+            return ret;
+        }
+            
+
+        Tx1_flag = 0;
+
+        /*
+        * Check endpoint-specific TXCSR status here.
+        * Handle STALL, ERROR and NAK timeout according
+        * to the controller's documented requirements.
+        */
+        //count = ioread16(data->base_usb1core + 0x10 + MUSB_COUNT0)&0xFFFF;
+
+        host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_TXCSR)&0xFF;
+
+        // printk("host_csr0 = 0x%x\n", host_csr0);
+
+        // Check error
+        if (host_csr0 & MUSB_CSR0_H_RXSTALL) {
+            dev_info(data->dev, "host_csr0 - RXSTALL - DATA\n");
+            return -1;
+        }
+        if (host_csr0 & MUSB_CSR0_H_ERROR) {
+            dev_info(data->dev, "host_csr0 - ERROR\n"); // the controller has tried to send the required IN token three times without getting any response
+            return -1;
+        }
+        if (host_csr0 & MUSB_CSR0_H_NAKTIMEOUT) {
+            // dev_info(data->dev, "NAK_TIMEOUT\n"); // .... consider later
+            // return -1;
+
+            dev_err(data->dev, "host_csr0 - bulk OUT EP%u failed, TXCSR=0x%04x\n", epnum, txcsr);
+            USB1_TxAbort(data, epnum);
+            return (txcsr & MUSB_TXCSR_H_NAKTIMEOUT) ? -ETIMEDOUT : -EIO;
+        } 
+
+    //     else {
+    // #if (PRINT_DEBUG)
+    //         dev_info(data->dev, "ACKed!!\n"); // .... consider later
+    // #endif
+    //     } 
+
+        offset += packet_len;
     }
-    for (i = 0; i < len/4; i++){
-        USB1_WriteDataFIFO(data, epnum, tmp[i]);
-    }
-    if (len%4) USB1_WriteDataFIFO(data, epnum, tmp[len/4]);
-
-
-    txcsr = ioread16(data->base_usb1core + 0x10 + MUSB_TXCSR);
-    txcsr |= MUSB_TXCSR_TXPKTRDY | MUSB_TXCSR_H_WZC_BITS;
-    iowrite16(txcsr, data->base_usb1core + 0x10 + MUSB_TXCSR);
-
-    // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "OUT Bulk: Data0/1");
-    if (ret < 0) return -1;
-    Tx1_flag = 0;
-    
-    count = ioread16(data->base_usb1core + 0x10 + MUSB_COUNT0)&0xFFFF;
-    // printk("ret = 0x%x, count = 0x%x\n", ret, count);
-
-    host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_CSR0)&0xFF;
-    // Check error
-    if (host_csr0 == MUSB_CSR0_H_RXSTALL) {
-        dev_info(data->dev, "RXSTALL - DATA\n");
-        return -1;
-    }
-    else if (host_csr0 == MUSB_CSR0_H_ERROR) {
-        dev_info(data->dev, "ERROR\n"); // the controller has tried to send the required IN token three times without getting any response
-        return -1;
-    }
-    else if (host_csr0 == MUSB_CSR0_H_NAKTIMEOUT) {
-        dev_info(data->dev, "NAK_TIMEOUT\n"); // .... consider later
-        return -1;
-    } 
-    else {
-#if (PRINT_DEBUG)
-        dev_info(data->dev, "ACKed!!\n"); // .... consider later
-#endif
-    } 
-     
     return 0;
 }
 
 int USB1_IN_Phase_Bulk(struct usb_device_data *data, u8 epnum, u8 addr, u8* dataX, u16* len){
     u16 host_csr0 = 0, rxcsr = 0;
     int ret = 0, i = 0;
-    u32 tmp[16] = {0}; // holp up to 64 bytes
+    u16 MaxPacketSz, RXInterval;
+    u8 transfer_type;
+    *len = 0;
 
+    MaxPacketSz = data->InsDeviceDescriptor.ep_bulk_in_wMaxPacketSize;
+    RXInterval = data->InsDeviceDescriptor.ep_bulk_in_bInterval;
+    transfer_type = data->InsDeviceDescriptor.ep_bulk_in_bmAttributes;
+
+    //mutex_lock(&data->hw_lock); /***** */
     setIndex(data, epnum);
-    USB1_Bulk_SetAddrRx(data, addr, epnum);
-    USB1_Bulk_SetTypeRx(data, epnum, 0x2); // 0x2 = full speed
-    USB1_Bulk_SetRxMaxp(data, 0x40); // max packet is 64 bytes
-    USB1_Bulk_SetRxInterval(data, 0x1); // as ep_bulk_in_bInterval = 0x1
 
-    // RX
-    iowrite8(3, data->base_usb1core + MUSB_RXFIFOSZ); // sz = 3 -> fifo size = 2^(sz+3) = 64 bytes for RX FIFO0
-    iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
 
-    // // write data into ep num
-    // for (i = 0; i < len; i++){
-    //     if (i < 4) tmp[0] |= (dataX[i] << (i*8));
-    //     else tmp[1] |= (dataX[i] << ((i - 4)*8));
-    // }
-    // USB1_WriteDataFIFO(data, epnum, tmp[0]);
-    // USB1_WriteDataFIFO(data, epnum, tmp[1]);
+    // 1. forget any old event
+    Rx1_flag &= ~BIT(epnum); 
 
-    // printk("0x%x  0x%x\n", tmp[0], tmp[1]);
-
+    //USB1_RxFlush(data, epnum);
+    // 2. start this packet
     rxcsr = MUSB_RXCSR_H_REQPKT;
     iowrite16(rxcsr, data->base_usb1core + 0x10 + MUSB_RXCSR);
 
-    // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Rx1_flag, 1, 2000, "IN Bulk: Data0/1");
+    //mutex_unlock(&data->hw_lock); /***** */
+
+    // 3. wait for Endpoint interrupt (Data packet)
+    ret = wait_val_update(data, &Rx1_flag, BIT(epnum), 200, "IN Bulk: Data0/1");
     if (ret < 0) return -1;
-    Rx1_flag = 0;
+    Rx1_flag &= ~BIT(epnum); 
 
     // wait MUSB_RXCSR_RXPKTRDY
-    ret = wait_register_update(data, data->base_usb1core, 0x10 + MUSB_RXCSR, 0, 1, 2000, "MUSB_RXCSR_RXPKTRDY");
+    ret = wait_register_update(data, data->base_usb1core, 0x10 + MUSB_RXCSR, 0, 1, 200, "MUSB_RXCSR_RXPKTRDY");
     if (ret < 0) return -1;
 
-    //msleep(2000);
-    
+    //mutex_lock(&data->hw_lock); /***** */
     count = ioread16(data->base_usb1core + 0x10 + MUSB_RXCOUNT)&0xFFFF;
 
     host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_RXCSR)&0xFF;
@@ -987,46 +1201,35 @@ int USB1_IN_Phase_Bulk(struct usb_device_data *data, u8 epnum, u8 addr, u8* data
 #endif
     // Check error
     if (host_csr0&MUSB_RXCSR_H_RXSTALL) {
-        dev_info(data->dev, "RXSTALL - DATA\n");
+        dev_warn_ratelimited(data->dev, "RXSTALL - DATA\n");
+        //mutex_unlock(&data->hw_lock); /***** */
         return -1;
     }
     if (host_csr0&MUSB_RXCSR_H_ERROR) {
-        dev_info(data->dev, "ERROR\n"); // the controller has tried to send the required IN token three times without getting any response
+        dev_warn_ratelimited(data->dev, "ERROR\n"); // the controller has tried to send the required IN token three times without getting any response
+        //mutex_unlock(&data->hw_lock); /***** */
         return -1;
     }
     if (host_csr0&MUSB_CSR0_H_NAKTIMEOUT) {
-        dev_info(data->dev, "NAK_TIMEOUT\n"); // .... consider later
+        dev_warn_ratelimited(data->dev, "NAK_TIMEOUT\n"); // .... consider later
+        //mutex_unlock(&data->hw_lock); /***** */
         return -1;
     } 
-    if (host_csr0&MUSB_RXCSR_FIFOFULL) {
-#if (PRINT_DEBUG)
-        dev_info(data->dev, "MUSB_RXCSR_FIFOFULL\n"); // .... consider later
-#endif
-        //return -1;
-    } 
+//     if (host_csr0&MUSB_RXCSR_FIFOFULL) {
+// //#if (PRINT_DEBUG)
+//         dev_warn_ratelimited(data->dev, "MUSB_RXCSR_FIFOFULL\n"); // .... consider later
+// //#endif
+//     } 
     if (host_csr0&MUSB_RXCSR_RXPKTRDY){
-#if (PRINT_DEBUG)
-        printk("Reading IN BULK with ACKed!\n");
-#endif
-        for (i = 0; i < (count/4); i++){
-            tmp[i] = USB1_ReadFIFO(data, epnum);
-        }
-        if (count%4){
-            tmp[i] = USB1_ReadFIFO(data, epnum);
-        }
-#if (PRINT_DEBUG)
-        printk("i = %d, tmp[0] = 0x%x, count = %d\n", i, tmp[0], count);
-#endif
-        for (i = 0; i < count; i++){
-            dataX[data->RX_index++] = (tmp[i/4] >> (i%4)*8)&0xFF;
-            if (dataX[data->RX_index-1] == 0x00){
-                data->RX_index--; // not take this
-            }
-            if (dataX[data->RX_index-1] == '\n') {
-                dataX[data->RX_index-1] = 0x00; // null terminator
-                data->isEnd = 1;
-                break;
-            }
+//#if (PRINT_DEBUG)
+        dev_warn_ratelimited(data->dev, "[%d] IN BULK ACKed!\n", count);
+//#endif
+        // for (i = 0; i < count; i++){
+        // }
+
+        for (i = 0; i < count; i++) {
+            dataX[i] = USB1_ReadU8FIFO(data, epnum);
+            //data->RX[data->RX_index++] = dataX[i];
         }
 
         // clear RXPKTRDY
@@ -1034,8 +1237,75 @@ int USB1_IN_Phase_Bulk(struct usb_device_data *data, u8 epnum, u8 addr, u8* data
         host_csr0 &=~ MUSB_RXCSR_RXPKTRDY; 
         iowrite32(host_csr0, data->base_usb1core + 0x10 + MUSB_RXCSR);
     } 
+
+    //mutex_unlock(&data->hw_lock); /***** */
      
     return 0;
 }
 
 
+
+// Producer: the thread polls IN and fills the kfifo:
+int usb1_rx_thread(void *arg)
+{
+    struct usb_device_data *data = arg;
+    u8 ep;
+    u8 pkt[64];
+    u16 n;
+    int ret;
+ 
+    ep = data->InsDeviceDescriptor
+             .ep_bulk_in_bEndpointAddress & 0x0F;
+ 
+    while (!kthread_should_stop()) {
+ 
+        n = 0;
+ 
+        mutex_lock(&data->hw_lock);
+ 
+        ret = USB1_IN_Phase_Bulk(
+            data,
+            ep,
+            ARDUINO_DEVICE_ADDR,
+            pkt,
+            &n);
+ 
+        mutex_unlock(&data->hw_lock);
+        //data->RX_len += n;
+ 
+        if (ret < 0) {
+            continue;
+        }
+ 
+        if (n > 0) {
+            unsigned int put;
+ 
+            printk("IN packet = %u bytes\n", n);
+            //printk("Last char = 0x%x\n", pkt[n - 1]);
+ 
+            put = kfifo_in(
+                &data->rx_fifo,
+                pkt,
+                n);
+ 
+            if (put != n) {
+                // dev_warn_ratelimited(
+                //     data->dev,
+                //     "RX software FIFO full: received=%u stored=%u dropped=%u\n",
+                //     n, put, n - put);
+
+                dev_warn_ratelimited(
+                    data->dev,
+                    "RX software FIFO full");
+            }
+ 
+            if (put)
+                wake_up_interruptible(&data->rx_wait);
+ 
+        } else {
+            //usleep_range(200, 500);
+        }
+    }
+ 
+    return 0;
+}
