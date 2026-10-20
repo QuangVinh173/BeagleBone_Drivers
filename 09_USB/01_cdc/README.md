@@ -28,7 +28,7 @@ Choose an option from the menu. The option numbers below correspond to the USB C
 
 Connection:
 
-<img src="images/connection.png.png" alt="connection" width="700">
+<img src="images/connection.png" alt="connection" width="700">
 
 ## Menu Options and Output
 
