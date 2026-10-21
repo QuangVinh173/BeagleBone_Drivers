@@ -427,9 +427,12 @@ struct usb_device_data {
 
     struct task_struct *rx_task;
     struct mutex        hw_lock;      /* INDEX + endpoint registers */
+    struct mutex rx_fifo_lock;
     wait_queue_head_t   rx_wait;
     wait_queue_head_t   irq_wait;
     DECLARE_KFIFO(rx_fifo, u8, USB1_RX_FIFO_SIZE); /* size must be a power of 2 */
+
+    u16 debug_sz;
 };
 
 /* ================== Handler ====================*/

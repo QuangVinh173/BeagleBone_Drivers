@@ -60,7 +60,11 @@ static ssize_t usb1_write(struct file *filp, const char __user *buf, size_t coun
         return -2;
     }
 
+#if (PRINT_DEBUG_TX_RX_SYNC)
     printk("usb1_write -> count = %d\n", count);
+#endif
+
+    data->debug_sz = count;
 
     /* Create kernel buffer */
     kbuf = kmalloc(count, GFP_KERNEL);
@@ -82,11 +86,20 @@ static ssize_t usb1_write(struct file *filp, const char __user *buf, size_t coun
         kfree(kbuf);
         return -EINVAL;
     }
-
+#if (PRINT_DEBUG_TX_RX_SYNC)
     printk("Sending OutData to Arduino\n");
+#endif
+
+#if (BUG_NOT_ENOUGH_BYTE_RX)
     mutex_lock(&data->hw_lock);
+#endif
+
     ret = USB1_OUT_Phase_Bulk(data, epNum_bulk_out_addr, ARDUINO_DEVICE_ADDR, kbuf, count);
+
+#if (BUG_NOT_ENOUGH_BYTE_RX)
     mutex_unlock(&data->hw_lock);
+#endif
+
     kfree(kbuf);
 
     if (ret < 0) {
@@ -129,14 +142,30 @@ static ssize_t usb1_read(struct file *filp, char __user *buf, size_t len, loff_t
     if (!READ_ONCE(data->done_configured))
         return -ENODEV;         /* Device disconnected */
  
+#if (PRINT_DEBUG_TX_RX_SYNC)
+        unsigned char first_byte;
+    if (kfifo_out_peek(&data->rx_fifo, &first_byte, 1) == 1) {
+        pr_info("RX FIFO first byte: 0x%02x\n", first_byte);
+    }
+#endif
+
     /*
      * Copy up to 'len' bytes from kernel FIFO to user space.
      * Remaining bytes stay inside rx_fifo for the next read().
      */
+#if (!BUG_NOT_ENOUGH_BYTE_RX)
+    mutex_lock(&data->rx_fifo_lock);
+#endif
     ret = kfifo_to_user(&data->rx_fifo,
                         buf,
                         len,
                         &copied);
+#if (PRINT_DEBUG_TX_RX_SYNC)
+    printk("copied = %d\n", copied);
+#endif
+#if (!BUG_NOT_ENOUGH_BYTE_RX)
+    mutex_unlock(&data->rx_fifo_lock);
+#endif
 
  
     if (ret)
@@ -350,6 +379,7 @@ static int usb1_probe(struct platform_device *pdev)
     INIT_WORK(&data->descriptor_clear_work, descriptor_clear_work_func);
 
     mutex_init(&data->hw_lock);
+    mutex_init(&data->rx_fifo_lock);
     init_waitqueue_head(&data->rx_wait);
     init_waitqueue_head(&data->irq_wait);
     INIT_KFIFO(data->rx_fifo);

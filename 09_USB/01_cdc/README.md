@@ -30,6 +30,10 @@ Connection:
 
 <img src="images/connection.png" alt="connection" width="700">
 
+Descriptor information grom Arduino device:
+
+<img src="images/descriptor.png" alt="descriptor" width="700">
+
 ## Menu Options and Output
 
 ### Option 1 — Check connection
