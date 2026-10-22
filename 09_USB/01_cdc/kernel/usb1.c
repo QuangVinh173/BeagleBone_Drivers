@@ -102,6 +102,17 @@ USBCORE1 0x47401C00:
 void setIndex(struct usb_device_data *data, u8 epnum){
     iowrite8(epnum, data->base_usb1core + MUSB_INDEX); // @1C0E
 }
+
+void setRxEP0(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
+    u8 RxType = 0;
+
+    RxType = (speed << 6)&MUSB_TYPE_SPEED;
+    RxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // Control type
+    RxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
+
+    iowrite8(RxType, data->base_usb1core + 0x10 + MUSB_TYPE0);
+}
+
 void setFifo(struct usb_device_data *data){
     u8 babblectl = 0;
 
@@ -114,7 +125,7 @@ void setFifo(struct usb_device_data *data){
     iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
 
     // fifo type0 (8-bit)
-    iowrite8(0x80, data->base_usb1core + 0x10 + MUSB_TYPE0);
+    setRxEP0(data, 0, data->full_speed ? FULL_SPEED : LOW_SPEED, CONTROL_TYPE);
 
     babblectl = ioread8(data->base_usb1core + MUSB_BABBLE_CTL);
     if (babblectl&MUSB_BABBLE_RCV_DISABLE){
@@ -122,6 +133,7 @@ void setFifo(struct usb_device_data *data){
         iowrite8(babblectl, data->base_usb1core + MUSB_BABBLE_CTL);
 	}
 }
+
 u32 fifo_offset(u8 epnum)
 {
 	return 0x20 + (epnum * 4); // @1C20
