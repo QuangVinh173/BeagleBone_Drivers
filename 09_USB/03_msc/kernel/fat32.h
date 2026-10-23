@@ -41,15 +41,15 @@ struct usb_device_data;
 
 /* BIOS Parameter Block (BPB) Details */
 typedef struct BPB {  
-    u16 Starting_LBA;
-    u8 OME_name[8];
+    u32 Starting_LBA;
+    u8 OME_name[9];
     u8 Partition_type;
     u16 Bytes_per_Sector;
     u8 Sectors_per_Cluster;
     u16 Reserved_Sectors;
     u16 Number_of_FATs;
     u32 Sectors_per_FAT;
-    u8 FS_type[8];
+    u8 FS_type[9];
     u32 Root_Cluster;
     u32 Data_Sector;
 } BPB;

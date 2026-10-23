@@ -10,12 +10,24 @@
 #include <linux/workqueue.h>
 #include <linux/atomic.h>
 #include "usb1.h"
+#include "main.h"
 #include "mass_storage.h"
 #include "fat32.h"
 
 #define DRIVER_NAME "usb1_driver"
 #define DEVICE_NAME "usb1"
 
+/*
+|-[ ] 'Protocols'
+   |-[ ] 'i2c'
+      |---- 'data.txt'
+         |-[.] 'i2c is a handy protocol.'
+   |-[ ] 'spi'
+      |---- 'data1.txt'
+         |-[.] 'spi is a fast protocol.'
+|---- 'Readme.txt'
+   |-[.] 'Lists of protocols.'
+*/
 void Test_phase_1(struct usb_device_data *data){
     int ret;
 
@@ -78,6 +90,11 @@ void Test_phase_1(struct usb_device_data *data){
     }
 }
 
+/*
+|---- 'Readme.txt'
+   |-[.] 'Lists of protocols.'
+|-[ ] 'Languages'
+*/
 void Test_phase_2(struct usb_device_data *data){
     int ret;
 
@@ -144,6 +161,52 @@ void Test_phase_4(struct usb_device_data *data){
     }
 }
 
+/* Descriptor work */
+static void descriptor_work_func(struct work_struct *work){
+    struct usb_device_data *data = container_of(work, struct usb_device_data, descriptor_work);
+    int ret;
+    u8 ep_out, ep_in;
+
+    msleep(1000);
+    /* Reset */
+    USB1_Reset_Speed(data);
+
+    /* Getting descriptor */
+    ret = USB1_GetDesc_Transfer(data);
+    if (ret < 0) {
+        printk("Fail USB1_GetDesc_Transfer\n");
+    }
+    else {
+#if (PRINT_DESCRIPTOR)
+        USB1_Print_DeviceDescriptor(data);
+        USB1_Print_DeviceDescriptor2(data);
+        USB1_Print_DeviceDescriptorIf0(data);
+#endif
+
+        // Setup FIFO, config once
+        ep_out = data->InsDeviceDescriptor.ep_bulk_out_bEndpointAddress & 0x0F;
+        ep_in = data->InsDeviceDescriptor.ep_bulk_in_bEndpointAddress & 0x0F;
+        USB1_SetupBulkFifos(data, ep_out, ep_in);
+
+        WRITE_ONCE(data->done_configured, true);
+
+        ret = USB1_CBW(data);
+        if (ret < 0) {
+            printk("Fail USB1_CBW\n");
+        }
+
+        if (ret == 0) schedule_work(&data->re_request_work);
+    }
+    
+}
+
+static void descriptor_clear_work_func(struct work_struct *work){
+    struct usb_device_data *data = container_of(work, struct usb_device_data, descriptor_clear_work);
+
+    WRITE_ONCE(data->done_configured, false);
+    memset(&data->InsDeviceDescriptor, 0, sizeof(data->InsDeviceDescriptor));
+}
+
 static void requested_work(struct work_struct *work){
     struct usb_device_data *data = container_of(work, struct usb_device_data, re_request_work);
     int ret;
@@ -175,19 +238,74 @@ static int usb1_open(struct inode *inode, struct file *file){
     file->private_data = data;
     return 0;
 }
-static ssize_t usb1_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
-{
-    struct usb_device_data *data = filp->private_data;
 
-    //ret = USB1_GetDesc_Transfer(data);
-    schedule_work(&data->re_request_work);
+// static long usb1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+// {
+//     struct usb_device_data *data = file->private_data;
+//     bool capture;
 
-    return count;
-}
+//     if (!data)
+//         return -ENODEV;
+
+//     switch (cmd) {
+//         case BBB_HID_CONNECTION:
+//             struct hid_status status;
+//             status.connected  = data->done_configured;
+//             status.full_speed = data->full_speed;
+
+//             if (copy_to_user((void __user *)arg,
+//                             &status,
+//                             sizeof(status)))
+//                 return -EFAULT;
+
+//             return 0;
+
+//         case BBB_HID_INFO:
+//             struct hid_info info;
+//             info.bcdUSB         = data->InsDeviceDescriptor.bcdUSB;
+//             info.idVendor       = data->InsDeviceDescriptor.idVendor;
+//             info.idProduct      = data->InsDeviceDescriptor.idProduct;
+//             info.bcdDevice      = data->InsDeviceDescriptor.bcdDevice;
+//             info.iManufacturer  = data->InsDeviceDescriptor.iManufacturer;
+//             info.iProduct       = data->InsDeviceDescriptor.iProduct;
+//             info.iSerialNumber  = data->InsDeviceDescriptor.iSerialNumber;
+
+//             if (copy_to_user((void __user *)arg,
+//                             &info,
+//                             sizeof(info)))
+//                 return -EFAULT;
+
+//             return 0;
+
+//         case BBB_HID_CAPTURE:
+//             if (copy_from_user(&capture,
+//                             (__u8 __user *)arg,
+//                             sizeof(capture)))
+//             {
+//                 return -EFAULT;
+//             }
+//             data->capture_data = capture;
+//             return 0;
+
+//         case BBB_HID_NOT_CAPTURE:
+//             if (copy_from_user(&capture,
+//                             (__u8 __user *)arg,
+//                             sizeof(capture)))
+//             {
+//                 return -EFAULT;
+//             }
+//             data->capture_data = capture;
+//             return 0;
+
+//         default:
+//             return -ENOTTY;
+//     }
+// }
+
 static const struct file_operations usb_device_fops = {
-    .owner = THIS_MODULE,
-    .open = usb1_open,
-    .write = usb1_write,
+    .owner =            THIS_MODULE,
+    .open =             usb1_open,
+    .unlocked_ioctl =   usb1_ioctl,
 };
 
 static int usb1_probe(struct platform_device *pdev)
@@ -301,34 +419,12 @@ static int usb1_probe(struct platform_device *pdev)
     data->RX_index = 0;
     data->usb1_cbw.dCBWTag = 0; // initialize tag 
 
-    //musb_init_controller_V(data);
 
     INIT_WORK(&data->re_request_work, requested_work);
     atomic_set(&data->should_stop, 0); // Initialize to 0 (false)
 
-    msleep(1000);
-    /* Reset */
-    USB1_Reset_Speed(data);
-
-    //msleep(2000);
-
-    /* Getting descriptor */
-    ret = USB1_GetDesc_Transfer(data);
-    if (ret < 0) {
-        printk("Fail USB1_GetDesc_Transfer\n");
-    }
-    else {
-        // USB1_Print_DeviceDescriptor(data);
-        // USB1_Print_DeviceDescriptor2(data);
-        // USB1_Print_DeviceDescriptorIf0(data);
-    }
-    
-    ret = USB1_CBW(data);
-    if (ret < 0) {
-        printk("Fail USB1_CBW\n");
-    }
-
-    if (ret == 0) schedule_work(&data->re_request_work);
+    INIT_WORK(&data->descriptor_work, descriptor_work_func);
+    INIT_WORK(&data->descriptor_clear_work, descriptor_clear_work_func);
 
     return 0;
 }
@@ -341,6 +437,12 @@ static int usb1_remove(struct platform_device *pdev)
     smp_mb(); // Memory barrier to ensure should_stop is visible
 
     cancel_work_sync(&data->re_request_work);
+
+    cancel_work_sync(&data->descriptor_work);
+    cancel_work_sync(&data->descriptor_clear_work);
+
+    /* Mark the device unavailable first. */
+    WRITE_ONCE(data->done_configured, false);
 
     USB1_exit(data);
 

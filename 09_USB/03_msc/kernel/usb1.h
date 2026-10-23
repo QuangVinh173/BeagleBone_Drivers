@@ -261,6 +261,11 @@ enum usb_speed {
 	USB_SPEED_FULL, USB_SPEED_LOW,				/* usb 1.1 */
 };
 
+#define CONTROL_TYPE     0x0 /* Control transfer */
+#define ISOCHRO_TYPE     0x1 /* Isochronous transfer */
+#define BULK_TYPE        0x2 /* Bulk transfer */
+#define INTERUPT_TYPE    0x3 /* Interrupt transfer */
+
 /* ================ Main structure ============== */
 struct usb_devRequest {
 	u8 bRequestType;
@@ -331,10 +336,6 @@ struct usb_DeviceDescriptor {
     u8 LUN;
 } __attribute__((packed));  // Total: 50 bytes
 
-
-
-
-
 struct usb_device_data {
 
     dev_t dev_num;
@@ -375,6 +376,12 @@ struct usb_device_data {
     atomic_t should_stop; // Use atomic_t instead of bool
 
     u8 count_many;
+
+
+
+    bool done_configured;
+    struct work_struct descriptor_work;
+    struct work_struct descriptor_clear_work;
 };
 
 /* ================== Handler ====================*/
@@ -397,14 +404,13 @@ void USB1_exit(struct usb_device_data *data);
 
 /* ================== API for Control Transfer ===================== */
 void USB1_Reset_Speed(struct usb_device_data *data);
-// int USB1_SETUP_Phase_GetDesc(struct usb_device_data *data, const u8* pkt, u16 addr);
-// int USB1_IN_Phase_GetDesc(struct usb_device_data *data);
-// int USB1_STATUS_Phase_GetDesc(struct usb_device_data *data);
 int USB1_GetDesc_Transfer(struct usb_device_data *data); /* main */
 
 void USB1_Print_DeviceDescriptor(struct usb_device_data *data);
 void USB1_Print_DeviceDescriptor2(struct usb_device_data *data);
 void USB1_Print_DeviceDescriptorIf0(struct usb_device_data *data);
+
+void USB1_SetupBulkFifos(struct usb_device_data *data, u8 ep_out, u8 ep_in);
 
 /* ================== API for Bulk Transfer ===================== */  
 int USB1_OUT_Phase_Bulk(struct usb_device_data *data, u8 epnum, u8 addr, const u8* dataX, u32 len);

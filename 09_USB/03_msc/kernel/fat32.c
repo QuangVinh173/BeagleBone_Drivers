@@ -363,78 +363,143 @@ int USB1_Scan_Cluster(struct usb_device_data *data, u8* cluster_data, u8 cluster
     return ret;
 }
 
-int USB1_f_Mount(struct usb_device_data *data){
+int USB1_f_Mount(struct usb_device_data *data)
+{
     int ret;
-    u16 Sector_data_len;
-    u32 partition_entry_offset = 0x01BE;
+    u16 sector_data_len = 0;
+    u32 partition_start_lba = 0;
+    u32 partition_sector_count = 0;
+    u32 partition_entry_offset;
+    u32 i;
+    u8 partition_type = 0;
+    bool has_valid_vbr = false;
 
-    /* Read sector 0 */
-    ret = USB1_Read_SECTOR_DATA(data, 0x0, 1, Glob_Sector_data, &Sector_data_len, "Sector 0", 0, PRINT_DATA);
-    if (ret == 0){
-        USB1_Get_String(Glob_Sector_data + 3, bpb_instance.OME_name, 8);
-#if (PRINT_DEBUG)
-        USB1_Print_String(Glob_Sector_data + 3, 8, "OEM name");
-#endif
+    /* Read LBA 0. This is normally the MBR for a partitioned USB drive. */
+    ret = USB1_Read_SECTOR_DATA(data, 0, 1, Glob_Sector_data,
+                                &sector_data_len, "MBR/VBR sector 0", 0, NO_PRINT_DATA);
+    if (ret < 0)
+        return ret;
 
-        /* Check MBR or VBR with valid OME name */
-        if ((USB1_Compare_String("mkfs.fat", bpb_instance.OME_name, strlen("mkfs.fat")) == 0) ||
-            (USB1_Compare_String("NTFS", bpb_instance.OME_name, strlen("NTFS")) == 0)){
-            printk("THis sector is for VBR\n");
-            bpb_instance.Starting_LBA = 0; // set this value to 0 to let USB1_Read_SECTOR_DATA below to read at sector 0
-        }
-        else {
-            printk("THis sector is for MBR, need to check partition entry\n");
-            bpb_instance.Starting_LBA = USB1_Get_Bytes(Glob_Sector_data + partition_entry_offset + 0x08, 32, LITTLE_ENDIAN);
-            bpb_instance.Partition_type = USB1_Get_Bytes(Glob_Sector_data + partition_entry_offset + 0x04, 8, LITTLE_ENDIAN);
-
-            USB1_Print_HexVal(Glob_Sector_data + partition_entry_offset + 0x04, 1, "Partition type", LITTLE_ENDIAN);
-            USB1_Print_HexVal(Glob_Sector_data + partition_entry_offset + 0x08, 4, "Starting LBA", LITTLE_ENDIAN);
-            USB1_Print_HexVal(Glob_Sector_data + partition_entry_offset + 0x0C, 4, "Num of sectors in partition", LITTLE_ENDIAN);
-            /* .. do later ... */
-        }
+    /*
+     * A superfloppy may have a FAT boot sector directly at LBA 0.
+     * Do not identify it by the OEM-name string: that field is informational
+     * and is not a reliable way to distinguish an MBR from a VBR.
+     */
+    if (Glob_Sector_data[510] == 0x55 && Glob_Sector_data[511] == 0xAA &&
+        USB1_Get_Bytes(Glob_Sector_data + 11, 16, LITTLE_ENDIAN) == SECTOR_SIZE &&
+        Glob_Sector_data[13] != 0 &&
+        (Glob_Sector_data[13] & (Glob_Sector_data[13] - 1)) == 0 &&
+        USB1_Get_Bytes(Glob_Sector_data + 14, 16, LITTLE_ENDIAN) != 0 &&
+        Glob_Sector_data[16] != 0 &&
+        USB1_Get_Bytes(Glob_Sector_data + 17, 16, LITTLE_ENDIAN) == 0 &&
+        USB1_Get_Bytes(Glob_Sector_data + 22, 16, LITTLE_ENDIAN) == 0 &&
+        USB1_Get_Bytes(Glob_Sector_data + 36, 32, LITTLE_ENDIAN) != 0) {
+        has_valid_vbr = true;
     }
 
-    /* Read sector at the starting LBA */
-    if (ret == 0){
-        ret = USB1_Read_SECTOR_DATA(data, bpb_instance.Starting_LBA, 1, Glob_Sector_data, &Sector_data_len, "Sector starting LBA", 0, 0);
-    }
-    if (ret == 0){
-#if (PRINT_DEBUG)
-        USB1_Print_HexVal(Glob_Sector_data + 13, 1, "Sectors per Cluster", LITTLE_ENDIAN);
-        USB1_Print_HexVal(Glob_Sector_data + 14, 2, "Reserved Sectors", LITTLE_ENDIAN);
-#endif
-        bpb_instance.Sectors_per_Cluster = (u8)USB1_Get_Bytes(Glob_Sector_data + 13, 8, LITTLE_ENDIAN);
-        bpb_instance.Reserved_Sectors = (u16)USB1_Get_Bytes(Glob_Sector_data + 14, 16, LITTLE_ENDIAN);
-
-#if (PRINT_DEBUG)
-        USB1_Print_HexVal(Glob_Sector_data + 16, 2, "Number of FATs", LITTLE_ENDIAN);
-        USB1_Print_HexVal(Glob_Sector_data + 36, 4, "Sectors per FAT table", LITTLE_ENDIAN);
-#endif
-        bpb_instance.Number_of_FATs = (u16)USB1_Get_Bytes(Glob_Sector_data + 16, 16, LITTLE_ENDIAN);
-        bpb_instance.Sectors_per_FAT = USB1_Get_Bytes(Glob_Sector_data + 36, 32, LITTLE_ENDIAN);
-
-#if (PRINT_DEBUG)
-        USB1_Print_HexVal(Glob_Sector_data + 44, 4, "Root Cluster", LITTLE_ENDIAN);
-        USB1_Print_String(Glob_Sector_data + 82, 8, "FS type");
-#endif
-        bpb_instance.Root_Cluster = USB1_Get_Bytes(Glob_Sector_data + 44, 32, LITTLE_ENDIAN);
-        USB1_Get_String(Glob_Sector_data + 82, bpb_instance.FS_type, 8);
-
-        // check FS type is FAT32 or not
-        if ((USB1_Compare_String("FAT32", bpb_instance.FS_type, strlen("FAT32")) == 0)){
-            bpb_instance.Data_Sector = bpb_instance.Reserved_Sectors + bpb_instance.Number_of_FATs * bpb_instance.Sectors_per_FAT;
-#if (PRINT_DEBUG)
-            printk("This is FAT32, real data starts at sector: %d = 0x%x\n", bpb_instance.Data_Sector, bpb_instance.Data_Sector);
-#endif
-        }
-        else {
-            printk("This not FAT32, not supporting any type other than FAT32\n");
-            return -1;
+    if (has_valid_vbr) {
+        /* FAT32 volume without a partition table (superfloppy layout). */
+        partition_start_lba = 0;
+        partition_type = 0x0C; /* Informational only. */
+        printk("FAT boot sector detected directly at LBA 0\n");
+    } else {
+        /* Parse the MBR partition table, which starts at byte 446 (0x1BE). */
+        if (Glob_Sector_data[510] != 0x55 || Glob_Sector_data[511] != 0xAA) {
+            printk("USB1_f_Mount: invalid MBR signature (expected 55 AA)\n");
+            return -EINVAL;
         }
 
+        partition_entry_offset = 0x1BE;
+        for (i = 0; i < 4; i++) {
+            u32 entry = partition_entry_offset + i * 16;
+            u8 type = Glob_Sector_data[entry + 4];
+            u32 start_lba = USB1_Get_Bytes(Glob_Sector_data + entry + 8,
+                                           32, LITTLE_ENDIAN);
+            u32 sector_count = USB1_Get_Bytes(Glob_Sector_data + entry + 12,
+                                              32, LITTLE_ENDIAN);
+
+            /* Accept FAT32 partition types 0x0B and 0x0C. */
+            if ((type == 0x0B || type == 0x0C) && start_lba != 0 &&
+                sector_count != 0) {
+                partition_type = type;
+                partition_start_lba = start_lba;
+                partition_sector_count = sector_count;
+                break;
+            }
+        }
+
+        if (partition_start_lba == 0) {
+            printk("USB1_f_Mount: no FAT32 partition (type 0x0B/0x0C) found in MBR\n");
+            return -EINVAL;
+        }
+
+        printk("MBR: FAT32 partition type=0x%02x, start LBA=%u, sectors=%u\n",
+               partition_type, partition_start_lba, partition_sector_count);
     }
 
-    return ret;
+    /* Starting_LBA must hold an LBA, not an OEM string or partition type. */
+    bpb_instance.Starting_LBA = partition_start_lba;
+    bpb_instance.Partition_type = partition_type;
+
+    /* Read the actual FAT32 volume boot record (LBA 8192 for your test USB). */
+    ret = USB1_Read_SECTOR_DATA(data, bpb_instance.Starting_LBA, 1,
+                                Glob_Sector_data, &sector_data_len,
+                                "FAT32 volume boot sector", 0, NO_PRINT_DATA);
+    if (ret < 0)
+        return ret;
+
+    /* Validate signature and core FAT32 BPB fields before using them. */
+    if (Glob_Sector_data[510] != 0x55 || Glob_Sector_data[511] != 0xAA) {
+        printk("USB1_f_Mount: invalid FAT boot-sector signature\n");
+        return -EINVAL;
+    }
+
+    bpb_instance.Bytes_per_Sector = (u16)USB1_Get_Bytes(
+        Glob_Sector_data + 11, 16, LITTLE_ENDIAN);
+    bpb_instance.Sectors_per_Cluster = Glob_Sector_data[13];
+    bpb_instance.Reserved_Sectors = (u16)USB1_Get_Bytes(
+        Glob_Sector_data + 14, 16, LITTLE_ENDIAN);
+    bpb_instance.Number_of_FATs = Glob_Sector_data[16];
+    bpb_instance.Sectors_per_FAT = USB1_Get_Bytes(
+        Glob_Sector_data + 36, 32, LITTLE_ENDIAN);
+    bpb_instance.Root_Cluster = USB1_Get_Bytes(
+        Glob_Sector_data + 44, 32, LITTLE_ENDIAN);
+    USB1_Get_String(Glob_Sector_data + 3, bpb_instance.OME_name, 8);
+    USB1_Get_String(Glob_Sector_data + 82, bpb_instance.FS_type, 8);
+
+    if (bpb_instance.Bytes_per_Sector != SECTOR_SIZE ||
+        bpb_instance.Sectors_per_Cluster == 0 ||
+        (bpb_instance.Sectors_per_Cluster &
+         (bpb_instance.Sectors_per_Cluster - 1)) != 0 ||
+        bpb_instance.Reserved_Sectors == 0 ||
+        bpb_instance.Number_of_FATs == 0 ||
+        bpb_instance.Sectors_per_FAT == 0 ||
+        bpb_instance.Root_Cluster < 2) {
+        printk("USB1_f_Mount: invalid FAT32 BPB: bytes/sector=%u, sectors/cluster=%u, reserved=%u, FATs=%u, sectors/FAT=%u, root cluster=%u\n",
+               bpb_instance.Bytes_per_Sector,
+               bpb_instance.Sectors_per_Cluster,
+               bpb_instance.Reserved_Sectors,
+               bpb_instance.Number_of_FATs,
+               bpb_instance.Sectors_per_FAT,
+               bpb_instance.Root_Cluster);
+        return -EINVAL;
+    }
+
+    /* Compute the first data-sector offset relative to the volume start. */
+    bpb_instance.Data_Sector = bpb_instance.Reserved_Sectors +
+        bpb_instance.Number_of_FATs * bpb_instance.Sectors_per_FAT;
+
+    printk("FAT32 mounted: volume LBA=%u, bytes/sector=%u, sectors/cluster=%u, reserved=%u, FATs=%u, sectors/FAT=%u, root cluster=%u, data-sector offset=%u\n",
+           bpb_instance.Starting_LBA,
+           bpb_instance.Bytes_per_Sector,
+           bpb_instance.Sectors_per_Cluster,
+           bpb_instance.Reserved_Sectors,
+           bpb_instance.Number_of_FATs,
+           bpb_instance.Sectors_per_FAT,
+           bpb_instance.Root_Cluster,
+           bpb_instance.Data_Sector);
+
+    return 0;
 }
 
 int USB1_f_Read_All(struct usb_device_data *data){

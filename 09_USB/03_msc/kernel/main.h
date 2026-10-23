@@ -7,6 +7,8 @@
 #define PRINT_USB_INFO 1 /* used for printing usb drive info */
 
 /* debug */
-#define PRINT_DEBUG 0 /* used for printing debug printk */
+#define PRINT_DEBUG 1 /* used for printing debug printk */
+
+#define PRINT_DESCRIPTOR 0
 
 #endif
