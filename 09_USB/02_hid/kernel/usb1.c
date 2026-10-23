@@ -14,6 +14,8 @@
 #include "usb1.h"
 #include "main.h"
 
+#define MOUSE_DEVICE_ADDR 0x1
+
 /* ================ Const data packet =======================*/
 const u8 GetDesc_pkt[8] = {
     0x80,       // bmRequestType: Device-to-host, Standard, Device
@@ -79,6 +81,17 @@ USBCORE1 0x47401C00:
 void setIndex(struct usb_device_data *data, u8 epnum){
     iowrite8(epnum, data->base_usb1core + MUSB_INDEX); // @1C0E
 }
+
+void setRxEP0(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
+    u8 RxType = 0;
+
+    RxType = (speed << 6)&MUSB_TYPE_SPEED;
+    RxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // Control type
+    RxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
+
+    iowrite8(RxType, data->base_usb1core + 0x10 + MUSB_TYPE0);
+}
+
 void setFifo(struct usb_device_data *data){
     u8 babblectl = 0;
 
@@ -91,7 +104,7 @@ void setFifo(struct usb_device_data *data){
     iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
 
     // fifo type0 (8-bit)
-    iowrite8(0x80, data->base_usb1core + 0x10 + MUSB_TYPE0);
+    setRxEP0(data, 0, data->full_speed ? FULL_SPEED : LOW_SPEED, CONTROL_TYPE);
 
     babblectl = ioread8(data->base_usb1core + MUSB_BABBLE_CTL);
     if (babblectl&MUSB_BABBLE_RCV_DISABLE){
@@ -111,34 +124,86 @@ void CpyMem(u8* dst, u8* src, u32 len){
     }
 }
 
-int wait_register_update(struct usb_device_data *data, void __iomem *mem, u16 reg_offset, u16 bit_offset, u8 bit_val, u16 delay_ms, u8* name_register){
-    unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
+int wait_register_update(struct usb_device_data *data,
+                         void __iomem *mem,
+                         u16 reg_offset,
+                         u16 bit_offset,
+                         u8 bit_val,
+                         u16 delay_ms,
+                         u8 *name_register)
+{
+    long ret;
+    u32 mask;
+    u32 expected;
+    void __iomem *reg;
 
-    while ((ioread32(mem + reg_offset)&(1u << bit_offset)) != (bit_val << bit_offset))  // Wait register updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_register);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+    if (!data || !mem || bit_offset >= 32 || bit_val > 1)
+        return -EINVAL;
+
+    reg = (u8 __iomem *)mem + reg_offset;
+    mask = BIT(bit_offset);
+    expected = bit_val ? mask : 0;
+
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (ioread32(reg) & mask) == expected,
+        msecs_to_jiffies(delay_ms)
+    );
+
+    if (ret < 0) {
+        dev_info(data->dev,
+                "Wait for register %s interrupted: %ld\n",
+                name_register, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        dev_err(data->dev,
+                "Reg Timeout %s: bit %u expected %u\n",
+                name_register, bit_offset, bit_val);
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
 
-int wait_val_update(struct usb_device_data *data, u16* var, u16 val, u16 delay_ms, u8* name_val){
+int wait_val_update(
+    struct usb_device_data *data,
+    u16 *var,
+    u16 val,
+    u16 delay_ms,
+    u8* name_val)
+{
+    long ret;
     unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
 
-    while (*var != val)  // Wait val updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_val);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+    if (!data || !var || val == 0)
+        return -EINVAL;
+
+    timeout = msecs_to_jiffies(delay_ms);
+
+    /*
+     * Sleep until the requested event bit is set,
+     * a signal interrupts the wait, or timeout expires.
+     */
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (READ_ONCE(*var) & val) != 0,
+        timeout);
+
+    if (ret < 0) {
+        // dev_info(data->dev,
+        //          "Val - Wait for %s interrupted: %ld\n",
+        //          name_val, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        // dev_err(data->dev,
+        //         "Val - Timeout waiting for %s (mask=0x%04x, flags=0x%04x)\n",
+        //         name_val, val, READ_ONCE(*var));
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
@@ -187,6 +252,16 @@ void USB1_WriteDataFIFO(struct usb_device_data *data, u8 epnum, u32 dataX){
     iowrite32(dataX, data->base_usb1core + FIFO0_offset);
 }
 
+u8 USB1_ReadU8FIFO(struct usb_device_data *data, u8 epnum){
+    u32 FIFO0_offset = fifo_offset(epnum);
+    return ioread8(data->base_usb1core + FIFO0_offset);
+}
+
+void USB1_WriteU8DataFIFO(struct usb_device_data *data, u8 epnum, u8 dataX){
+    u32 FIFO0_offset = fifo_offset(epnum);
+    iowrite8(dataX, data->base_usb1core + FIFO0_offset);
+}
+
 /* ================== Handler =================*/
 void stop_reset(struct usb_device_data *data){
     u32 power = 0;
@@ -210,12 +285,6 @@ irqreturn_t USB1_handler(int irq, void *d){
     u32 irqst0, irqst1;
     u16 int_tx, int_rx;
 
-    u16 host_csr0 = 0;
-    int ret = 0, i = 0;
-    u32 tmp[2] = {0}; // holp up to 7 bytes
-    u8 dataX[7] = {0};
-
-
     irqst0 = ioread32(data->base_usb1ctl + USB1CTL_IRQST0);
     irqst1 = ioread32(data->base_usb1ctl + USB1CTL_IRQST1);
     int_tx = irqst0&0xFF;
@@ -229,85 +298,20 @@ irqreturn_t USB1_handler(int irq, void *d){
 
     if (irqst0){
         if (int_tx){
-            Tx1_flag = 1;
+            WRITE_ONCE(Tx1_flag, READ_ONCE(Tx1_flag) | int_tx);
 #if (PRINT_DEBUG)
             printk("ISR -> TX[0x%x]\n", int_tx);
 #endif
         }
         if (int_rx){
-            Rx1_flag = 1;
-            //printk("ISR -> RX[0x%x]\n", int_rx);
-
-            // // ************* trigger
-
-            // wait for Endpoint 0 interrupt (Data packet)
-            ret = wait_val_update(data, &Rx1_flag, 1, 2000, "IN Bulk: Data0/1");
-            if (ret < 0) return -1;
-            Rx1_flag = 0;
-
-            // wait MUSB_RXCSR_RXPKTRDY
-            ret = wait_register_update(data, data->base_usb1core, 0x10 + MUSB_RXCSR, 0, 1, 2000, "MUSB_RXCSR_RXPKTRDY");
-            if (ret < 0) return -1;
-
-            //msleep(2000);
-            
-            count = ioread16(data->base_usb1core + 0x10 + MUSB_RXCOUNT)&0xFFFF;
-
-            host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_RXCSR)&0xFF;
-
-            //printk("host_csr0 = 0x%x, count = 0x%x\n", host_csr0, count);
-            // Check error
-            if (host_csr0&MUSB_RXCSR_H_RXSTALL) {
-                dev_info(data->dev, "RXSTALL - DATA\n");
-                return -1;
-            }
-            if (host_csr0&MUSB_RXCSR_H_ERROR) {
-                dev_info(data->dev, "ERROR\n"); // the controller has tried to send the required IN token three times without getting any response
-                return -1;
-            }
-            if (host_csr0&MUSB_CSR0_H_NAKTIMEOUT) {
-                dev_info(data->dev, "NAK_TIMEOUT\n"); // .... consider later
-                return -1;
-            } 
-            if (host_csr0&MUSB_RXCSR_FIFOFULL) {
-                //dev_info(data->dev, "MUSB_RXCSR_FIFOFULL\n"); // .... consider later
-                //return -1;
-            } 
-            if (host_csr0&MUSB_RXCSR_RXPKTRDY){
-                //printk("Reading IN BULK with ACKed!\n");
-
-                for (i = 0; i < (count/4); i++){
-                    tmp[i] = USB1_ReadFIFO(data, 1);
-                }
-                if (count%4){
-                    tmp[i] = USB1_ReadFIFO(data, 1);
-                }
-                //printk("i = %d, tmp[0] = 0x%x, tmp[1] = 0x%x, count = %d\n", i, tmp[0], tmp[1], count);
-
-                for (i = 0; i < count; i++){
-                    dataX[data->RX_index++] = (tmp[i/4] >> (i%4)*8)&0xFF;
-                }
-
-                // fetch data correctly
-                data->report_id = dataX[0];
-                data->button = dataX[1];
-                data->dx = (int8_t)dataX[2];
-                data->dy = (int8_t)dataX[3];
-                data->dz = (int8_t)dataX[4];
-
-                // clear RXPKTRDY
-                host_csr0 = ioread32(data->base_usb1core + 0x10 + MUSB_RXCSR);
-                host_csr0 &=~ MUSB_RXCSR_RXPKTRDY; 
-                iowrite32(host_csr0, data->base_usb1core + 0x10 + MUSB_RXCSR);
-            } 
-
-            printk("report_id = 0x%x, button = 0x%x, dx = %d, dy = %d, dz = %d\n", data->report_id, data->button, data->dx, data->dy, data->dz);
-
-            // ************* trigger for the next time
-            iowrite16(MUSB_RXCSR_H_REQPKT, data->base_usb1core + 0x10 + MUSB_RXCSR);
-            data->RX_index = 0;
-
+            WRITE_ONCE(Rx1_flag, READ_ONCE(Rx1_flag) | int_rx);
         }
+    
+        /*
+        * Notify threads waiting for USB endpoint events.
+        */
+        if (int_tx || int_rx)
+            wake_up_interruptible(&data->irq_wait);
     }
     if (irqst1){
         if ((irqst1)&(1u << 7)){
@@ -318,9 +322,11 @@ irqreturn_t USB1_handler(int irq, void *d){
         } 
         if ((irqst1)&(1u << 4)){
             printk("Device connected\n");
+            schedule_work(&data->descriptor_work);
         }   
         if ((irqst1)&(1u << 5)){
             printk("Device disconnected\n");
+            schedule_work(&data->descriptor_clear_work);
         }     
         if ((irqst1)&(1u << 8)){
             printk("DRVVBUS level change\n");
@@ -352,6 +358,7 @@ void USB1_reset(struct usb_device_data *data){
 int USB1_init(struct usb_device_data *data){
     u32 usbcore_pwr = 0, usbcore_testmode = 0;
     u8 power = 0;
+    int ret;
     power &= 0xf0;
 
     // disable testmode
@@ -436,6 +443,9 @@ void USB1_Reset_Speed(struct usb_device_data *data){
     else if (devctl&MUSB_DEVCTL_LSDEV) printk("Low speed\n");
     else printk("Undefined speed\n");
 
+    if (devctl&MUSB_DEVCTL_FSDEV) data->full_speed = true;
+    else data->full_speed = false;
+
     // set ptr
     data->DeviceDescriptorPtr = (u8*)(&data->InsDeviceDescriptor);
 }
@@ -461,7 +471,7 @@ int USB1_SETUP_Phase_GetDesc(struct usb_device_data *data, const u8* pkt, u16 ad
     host_csr0 |= MUSB_CSR0_H_SETUPPKT | MUSB_CSR0_TXPKTRDY; // Set SETUPPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -502,7 +512,7 @@ int USB1_IN_Phase_GetDesc(struct usb_device_data *data){
     iowrite16(MUSB_CSR0_H_REQPKT, data->base_usb1core + 0x10 + MUSB_CSR0);
 
     // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "IN: Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "IN: Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
     
@@ -587,12 +597,13 @@ int USB1_IN_Phase_GetDesc(struct usb_device_data *data){
 
 int USB1_STATUS_Phase_GetDesc(struct usb_device_data *data){
     u16 host_csr0 = 0;
+    int ret;
 
     host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_CSR0);
     host_csr0 |= MUSB_CSR0_H_STATUSPKT | MUSB_CSR0_TXPKTRDY; // Set STATUSPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -635,7 +646,7 @@ int USB1_SETUP_Phase_SetAddr(struct usb_device_data *data, const u8* pkt, u16 ad
     host_csr0 |= MUSB_CSR0_H_SETUPPKT | MUSB_CSR0_TXPKTRDY; // Set SETUPPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1 vvv");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1 vvv");
     if (ret < 0) return -1;
     Tx1_flag = 0;
 
@@ -678,7 +689,7 @@ int USB1_OUT_Phase_GetDesc(struct usb_device_data *data, const u8* dataX, u32 le
     iowrite16(MUSB_CSR0_TXPKTRDY, data->base_usb1core + 0x10 + MUSB_CSR0);
 
     // wait for Endpoint 0 interrupt (Data packet)
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "IN: Data0/1");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "IN: Data0/1");
     if (ret < 0) return -1;
     Tx1_flag = 0;
     
@@ -711,7 +722,7 @@ int USB1_STATUS_Phase_SetAddr(struct usb_device_data *data){
     host_csr0 = MUSB_CSR0_H_STATUSPKT | MUSB_CSR0_H_REQPKT; // Set STATUSPKT and TXPKTRDY 
     iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_CSR0);
 
-    ret = wait_val_update(data, &Tx1_flag, 1, 2000, "SETUP: Token + Data0/1 yyy");
+    ret = wait_val_update(data, &Tx1_flag, BIT(0), 2000, "SETUP: Token + Data0/1 yyy");
     Tx1_flag = 0;
     if (ret < 0) {
         return -1;
@@ -887,16 +898,15 @@ void USB1_Print_DeviceDescriptorIf0(struct usb_device_data *data){
     printk("# ----------------------------------- #\n");
 }
 /* ================== Utils for interrupt transfer ===================== */
-
 /* RX */
 void USB1_Interrupt_SetAddrRx(struct usb_device_data *data, u8 addr, u8 epnum){
     iowrite16(addr, data->base_usb1core + MUSB_RXFUNCADDR + (0x08 * epnum));
 }
-void USB1_Interrupt_SetTypeRx(struct usb_device_data *data, u8 epnum, u8 speed){
+void USB1_Interrupt_SetTypeRx(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
     u8 RxType = 0;
 
     RxType = (speed << 6)&MUSB_TYPE_SPEED;
-    RxType |= (0x3 << 4)&MUSB_TYPE_PROTO; // Interrupt type
+    RxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // Interrupt type
     RxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
 
     iowrite8(RxType, data->base_usb1core + 0x10 + MUSB_RXTYPE);
@@ -908,27 +918,150 @@ void USB1_Interrupt_SetRxInterval(struct usb_device_data *data, u8 rxInterval){
     iowrite8(rxInterval, data->base_usb1core + 0x10 + MUSB_RXINTERVAL);
 }
 
-
-/* ================== API for Interrupt Transfer ===================== */
-int USB1_IN_Phase_Interrupt(struct usb_device_data *data, u8 epnum, u8 addr){
-    u16 rxcsr = 0;
-
-    setIndex(data, epnum); 
-    USB1_Interrupt_SetAddrRx(data, addr, epnum);
-    USB1_Interrupt_SetTypeRx(data, epnum, 0x2); // 0x2 = full speed
-    USB1_Interrupt_SetRxMaxp(data, 0x08); // max packet is 7 bytes
-    USB1_Interrupt_SetRxInterval(data, 0x2); // as bInterval = 0x2
+void USB1_SetupInterruptFifos(struct usb_device_data *data, u8 ep_in)
+{
+    void __iomem *core = data->base_usb1core;
+    u16 MaxPacketSzRX, RXInterval;
+    u8 transfer_typeRX;
 
     // RX
-    iowrite8(3, data->base_usb1core + MUSB_RXFIFOSZ); // sz = 3 -> fifo size = 2^(sz+3) = 64 bytes for RX FIFO0
-    iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
+    MaxPacketSzRX = data->InsDeviceDescriptor.wMaxPacketSize;
+    RXInterval = data->InsDeviceDescriptor.bInterval;
+    transfer_typeRX = data->InsDeviceDescriptor.bmAttributes5;
+
+    // ======================================
+
+    setIndex(data, ep_in);  
+    iowrite8(3, core + MUSB_RXFIFOSZ);                   /* 64 bytes */
+    iowrite16(128 >> 3, core + MUSB_RXFIFOADD);          /* RAM 128..191 */
+    //iowrite16(MUSB_RXCSR_CLRDATATOG, core + 0x10 + MUSB_RXCSR);
+
+    USB1_Interrupt_SetAddrRx(data, MOUSE_DEVICE_ADDR, ep_in);
+    USB1_Interrupt_SetTypeRx(data, ep_in, (data->full_speed) ? FULL_SPEED : LOW_SPEED, transfer_typeRX); 
+    USB1_Interrupt_SetRxMaxp(data, MaxPacketSzRX); // max packet (usually 8 byres)
+    USB1_Interrupt_SetRxInterval(data, RXInterval); // as ep_bulk_in_bInterval = 0x1
+}
+
+/* ================== API for Interrupt Transfer ===================== */
+int USB1_IN_Phase_Interrupt(struct usb_device_data *data, u8 epnum, u8 addr, u8 *dataX, u16* len){
+    u16 rxcsr = 0, host_csr0;
+    int i = 0;
+    int ret;
+
+    mutex_lock(&data->hw_lock);
+    setIndex(data, epnum); 
 
     // trigger
     rxcsr = MUSB_RXCSR_H_REQPKT;
     iowrite16(rxcsr, data->base_usb1core + 0x10 + MUSB_RXCSR);
+    mutex_unlock(&data->hw_lock);
 
-    data->RX_index = 0;
+    // // ************* trigger
+    // clear first
+    Rx1_flag &=~ BIT(epnum);
+
+    // wait for Endpoint 0 interrupt (Data packet)
+    ret = wait_val_update(data, &Rx1_flag, BIT(epnum), 2000, "IN Interrupt: Data0/1");
+    if (ret < 0) return -1;
+    Rx1_flag &=~ BIT(epnum);
+
+    // wait MUSB_RXCSR_RXPKTRDY
+    setIndex(data, epnum);  /* re-select index */
+    ret = wait_register_update(data, data->base_usb1core, 0x10 + MUSB_RXCSR, 0, 1, 200, "MUSB_RXCSR_RXPKTRDY");
+    if (ret < 0) return -1;
+
+    //msleep(2000);
+    
+    mutex_lock(&data->hw_lock);
+    setIndex(data, epnum);  /* re-select index */
+    count = ioread16(data->base_usb1core + 0x10 + MUSB_RXCOUNT)&0xFFFF;
+    *len = count;
+
+    host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_RXCSR)&0xFF;
+
+
+    if (host_csr0 & (MUSB_RXCSR_H_RXSTALL | MUSB_RXCSR_H_ERROR | MUSB_CSR0_H_NAKTIMEOUT)) {
+        iowrite16(host_csr0 & ~(MUSB_RXCSR_H_RXSTALL | MUSB_RXCSR_H_ERROR | MUSB_CSR0_H_NAKTIMEOUT |
+                          MUSB_RXCSR_H_REQPKT), data->base_usb1core + 0x10 + MUSB_RXCSR);  /* clear, or it stays stuck */
+        mutex_unlock(&data->hw_lock);
+        dev_warn_ratelimited(data->dev, "mouse IN error RXCSR=0x%04x\n", host_csr0);
+        return -EIO;
+    }
+
+    if (host_csr0&MUSB_RXCSR_RXPKTRDY){
+        for (i = 0; i < count; i++) {
+            dataX[i] = USB1_ReadU8FIFO(data, epnum);
+        }
+    }
+
+    // clear RXPKTRDY
+    host_csr0 = ioread16(data->base_usb1core + 0x10 + MUSB_RXCSR);
+    host_csr0 &=~ MUSB_RXCSR_RXPKTRDY; 
+    iowrite16(host_csr0, data->base_usb1core + 0x10 + MUSB_RXCSR);
+
+    mutex_unlock(&data->hw_lock);
 
     return 0;
 }
 
+int usb1_rx_thread(void *arg)
+{
+    struct usb_device_data *data = arg;
+    u8 ep;
+    u8 pkt[64];
+    u16 n;
+    int ret;
+
+    //printk("usb1_rx_thread\n");
+
+    ep = data->InsDeviceDescriptor
+             .bEndpointAddress & 0x0F;
+
+    while (!kthread_should_stop()) {
+
+        n = 0;
+        ret = USB1_IN_Phase_Interrupt(
+            data,
+            ep,
+            MOUSE_DEVICE_ADDR,
+            pkt,
+            &n);
+
+        if (ret < 0) {
+            continue;
+        }
+
+        if (n > 0){
+            unsigned int put;
+
+            if (data->capture_data){
+                put = kfifo_in(
+                    &data->rx_fifo,
+                    pkt,
+                    n);
+
+                if (put)
+                    wake_up_interruptible(&data->rx_wait);
+
+#if (PRINT_DATA)
+                printk("mouse[%u]: %*ph\n", n, n, pkt);    /* check the real layout first */
+#endif
+            }
+        }
+#if (PRINT_DATA)
+        if (n >= 5) {
+            // fetch data correctly
+            data->report_id = pkt[0];
+            data->button = pkt[1];
+            data->dx = (int8_t)pkt[2];
+            data->dy = (int8_t)pkt[3];
+            data->dz = (int8_t)pkt[4];
+
+            printk("report_id = 0x%x, button = 0x%x, dx = %d, dy = %d, dz = %d\n", data->report_id, data->button, data->dx, data->dy, data->dz);
+
+        }
+#endif
+    }
+
+    return 0;
+}

@@ -13,6 +13,11 @@
 #include <linux/atomic.h>
 #include <linux/delay.h>
 
+#include <linux/kthread.h>
+#include <linux/kfifo.h>
+#include <linux/mutex.h>
+#include <linux/wait.h>
+
 /* CONTROL */
 #define INDEX_USED 1
 
@@ -233,6 +238,9 @@
 #define MUSB_TYPE_PROTO_SHIFT	4
 #define MUSB_TYPE_REMOTE_END	0xf	/* Implicitly zero for ep0 */
 
+// #define MUSB_RXCSR_H_ERR (MUSB_RXCSR_H_RXSTALL | MUSB_RXCSR_H_ERROR
+//                          | MUSB_CSR0_H_NAKTIMEOUT | MUSB_RXCSR_FIFOFULL | )
+
 
 /* ============ Address registers (0x80 + (0x08 * epnum) + offset;) =============== */
 /* endpoint 0 */
@@ -259,6 +267,16 @@
 #define USB_REQ_SYNCH_FRAME		0x0C
 #define USB_REQ_SET_SEL			0x30
 #define USB_REQ_SET_ISOCH_DELAY		0x31
+
+/* CHARACTERISTICS */
+#define LOW_SPEED   0x3 /* Low-Speed, 1.5 Mbps */
+#define FULL_SPEED  0x2 /* High-Speed, 12 Mbps */
+#define HIGH_SPEED  0x1 /* High-Speed, 480 Mbps */
+
+#define CONTROL_TYPE     0x0 /* Control transfer */
+#define ISOCHRO_TYPE     0x1 /* Isochronous transfer */
+#define BULK_TYPE        0x2 /* Bulk transfer */
+#define INTERUPT_TYPE    0x3 /* Interrupt transfer */
 
 /* ================ Main structure ============== */
 struct usb_devRequest {
@@ -331,7 +349,7 @@ struct usb_DeviceDescriptor {
 
 } __attribute__((packed));  // Prevents padding; total size now 80 bytes;
 
-
+#define USB1_RX_FIFO_SIZE 64
 struct usb_device_data {
 
     dev_t dev_num;
@@ -365,14 +383,21 @@ struct usb_device_data {
     int8_t dy; // down+, up-
     int8_t dz; // scroll up +, scroll down -
 
-    bool isEnd;
-    u8 RX_index;
-
-    struct work_struct re_request_work;
-    bool is_scheduled;
-    atomic_t should_stop; // Use atomic_t instead of bool
-
     u8 count_many;
+
+    bool done_configured;
+    struct work_struct descriptor_work;
+    struct work_struct descriptor_clear_work;
+
+    struct task_struct *rx_task;
+    wait_queue_head_t   irq_wait;
+    wait_queue_head_t   rx_wait;
+    struct mutex        hw_lock;      /* INDEX + endpoint registers */
+
+    DECLARE_KFIFO(rx_fifo, u8, USB1_RX_FIFO_SIZE);
+    bool capture_data;
+
+    bool full_speed;
 };
 
 /* ================== Handler ====================*/
@@ -395,16 +420,16 @@ void USB1_exit(struct usb_device_data *data);
 
 /* ================== API for Control Transfer ===================== */
 void USB1_Reset_Speed(struct usb_device_data *data);
-// int USB1_SETUP_Phase_GetDesc(struct usb_device_data *data, const u8* pkt, u16 addr);
-// int USB1_IN_Phase_GetDesc(struct usb_device_data *data);
-// int USB1_STATUS_Phase_GetDesc(struct usb_device_data *data);
 int USB1_GetDesc_Transfer(struct usb_device_data *data); /* main */
 
 void USB1_Print_DeviceDescriptor(struct usb_device_data *data);
 void USB1_Print_DeviceDescriptor2(struct usb_device_data *data);
 void USB1_Print_DeviceDescriptorIf0(struct usb_device_data *data);
 
-/* ================== API for Bulk Transfer ===================== */  
-int USB1_IN_Phase_Interrupt(struct usb_device_data *data, u8 epnum, u8 addr);
-#endif
+void USB1_SetupInterruptFifos(struct usb_device_data *data, u8 ep_in);
 
+int usb1_rx_thread(void *arg);
+
+/* ================== API for Bulk Transfer ===================== */  
+int USB1_IN_Phase_Interrupt(struct usb_device_data *data, u8 epnum, u8 addr, u8 *dataX, u16* len);
+#endif
