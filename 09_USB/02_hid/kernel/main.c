@@ -86,15 +86,6 @@ static int usb1_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-static ssize_t usb1_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
-{
-    struct usb_device_data *data = filp->private_data;
-
-    (void*)data;
-
-    return count;
-}
-
 static ssize_t usb1_read(struct file *filp, char __user *buf, size_t len, loff_t *f_pos){
     struct usb_device_data *data = filp->private_data;
     unsigned int copied = 0;
@@ -133,6 +124,8 @@ static ssize_t usb1_read(struct file *filp, char __user *buf, size_t len, loff_t
                         buf,
                         len,
                         &copied);
+
+    printk("cped = %d\n", copied);
 
     if (ret)
         return ret;
@@ -207,7 +200,6 @@ static const struct file_operations usb_device_fops = {
     .owner =            THIS_MODULE,
     .open =             usb1_open,
     .release =          usb1_release,
-    .write =            usb1_write,
     .read =             usb1_read,
     .unlocked_ioctl =   usb1_ioctl,
 };

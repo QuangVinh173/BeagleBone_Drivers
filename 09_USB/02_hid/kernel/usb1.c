@@ -17,52 +17,58 @@
 #define MOUSE_DEVICE_ADDR 0x1
 
 /* ================ Const data packet =======================*/
+/* Get the first 18 bytes of the Device Descriptor */
 const u8 GetDesc_pkt[8] = {
     0x80,       // bmRequestType: Device-to-host, Standard, Device
-    0x06,       // bRequest: USB_REQ_GET_DESCRIPTOR
-    0x00, 0x01, // wValue: Descriptor Index = 0 (LOW), Type = DEVICE (1) (HIGH)
-    0x00, 0x00, // wIndex: 0
-    0x12, 0x00  // wLength: 18 bytes (Device descriptor length)
+    0x06,       // bRequest: GET_DESCRIPTOR
+    0x00, 0x01, // wValue = 0x0100: DEVICE descriptor, index 0
+    0x00, 0x00, // wIndex = 0
+    0x12, 0x00  // wLength = 18 bytes
 };
 
+/* Get the 9-byte Configuration Descriptor header */
 const u8 GetDesc_pkt2[8] = {
     0x80,       // bmRequestType: Device-to-host, Standard, Device
-    0x06,       // bRequest: USB_REQ_GET_DESCRIPTOR
-    0x00, 0x02, // wValue: Descriptor Index = 0 (LOW), Type = DEVICE (1) (HIGH)
-    0x00, 0x00, // wIndex: 0
-    0x09, 0x00  // wLength: 18 bytes (Device descriptor length)
+    0x06,       // bRequest: GET_DESCRIPTOR
+    0x00, 0x02, // wValue = 0x0200: CONFIGURATION descriptor, index 0
+    0x00, 0x00, // wIndex = 0
+    0x09, 0x00  // wLength = 9 bytes
 };
 
+/* Get the complete Configuration Descriptor tree */
 const u8 GetDescAll_pkt[8] = {
-    0x80,       // bmRequestType: Device-to-host, Standard, 
-    0x06,       // bRequest: USB_REQ_GET_DESCRIPTOR
-    0x00, 0x02, // wValue: Index=0 (LOW), Type=CONFIGURATION (2) (HIGH) → 0x0200
-    0x00, 0x00, // wIndex: 
-    0x22, 0x00  // wLength: 34 bytes 
+    0x80,       // bmRequestType: Device-to-host, Standard, Device
+    0x06,       // bRequest: GET_DESCRIPTOR
+    0x00, 0x02, // wValue = 0x0200: CONFIGURATION descriptor, index 0
+    0x00, 0x00, // wIndex = 0
+    0x22, 0x00  // wLength = 34 bytes (from wTotalLength = 0x0022)
 };
 
+/* Set device address to MOUSE_DEVICE_ADDR (currently 1) */
 const u8 SetAddr_pkt[8] = {
     0x00,       // bmRequestType: Host-to-device, Standard, Device
-    0x05,       // bRequest: USB_REQ_SET_ADDRESS
-    0x01, 0x00, // wValue: Device address: 1
-    0x00, 0x00, // wIndex: 0
-    0x00, 0x00  // wLength: 0
+    0x05,       // bRequest: SET_ADDRESS
+    0x01, 0x00, // wValue = 0x0001: device address 1
+    0x00, 0x00, // wIndex = 0
+    0x00, 0x00  // wLength = 0
 };
 
+/* Set configuration value to 1 */
+const u8 SetConf_pkt[8] = {
+    0x00,       // bmRequestType: Host-to-device, Standard, Device
+    0x09,       // bRequest: SET_CONFIGURATION
+    0x01, 0x00, // wValue = 0x0001: configuration value 1
+    0x00, 0x00, // wIndex = 0
+    0x00, 0x00  // wLength = 0
+};
+
+/* Read the current configuration value */
 const u8 GetConf_pkt[8] = {
     0x80,       // bmRequestType: Device-to-host, Standard, Device
-    0x08,       // bRequest: USB_REQ_GET_CONFIGURATION
-    0x00, 0x01, // wValue: Descriptor Index = 0 (LOW), Type = DEVICE (1) (HIGH)
-    0x00, 0x00, // wIndex: 0
-    0x01, 0x00  // wLength: 9 bytes (Configuration descriptor length)
-};
-
-const u8 SetConf_pkt[8] = {
-    0x00,       // bmRequestType: Host-to-Device, Standard, Device
-    0x09,       // bRequest: USB_REQ_SET_CONFIGURATION
-    0x01, 0x00, // wValue: Configuration value 1 (LOW), 0 (HIGH) → 0x0001
-    0x00, 0x00, // wIndex: 0
-    0x00, 0x00  // wLength: 0 (no data phase)
+    0x08,       // bRequest: GET_CONFIGURATION
+    0x00, 0x00, // wValue = 0
+    0x00, 0x00, // wIndex = 0
+    0x01, 0x00  // wLength = 1 byte
 };
 
 /* ================== Tmp variables ================= */
@@ -772,6 +778,8 @@ int USB1_READ_Transaction(struct usb_device_data *data, const u8* pkt, u16 addr,
         ret = USB1_STATUS_Phase_GetDesc(data);
     }
 
+    if (ret < 0) printk("=> %s\n", string);
+
     return ret;
 }
 
@@ -805,30 +813,31 @@ int USB1_GetDesc_Transfer(struct usb_device_data *data){
         ret = USB1_WRITE_Transaction(data, SetAddr_pkt, 0x0, NULL, 0, "SetAddr_pkt");
     }
 
-    /* Getting descriptor with new address 0x1 */
+    /* Getting descriptor with new address MOUSE_DEVICE_ADDR */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDesc_pkt, 0x1, "GetDesc_pkt");
+        ret = USB1_READ_Transaction(data, GetDesc_pkt, MOUSE_DEVICE_ADDR, "GetDesc_pkt");
     }
 
-    /* Getting descriptor with new address 0x1 */
+    /* Getting descriptor with new address MOUSE_DEVICE_ADDR */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDesc_pkt2, 0x1, "GetDesc_pkt2");
+        ret = USB1_READ_Transaction(data, GetDesc_pkt2, MOUSE_DEVICE_ADDR, "GetDesc_pkt2");
     }
 
-    /* Getting all-byte device descriptor with new address 0x1 */
+    /* Getting all-byte device descriptor with new address MOUSE_DEVICE_ADDR */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetDescAll_pkt, 0x1, "GetDescAll_pkt");
+        ret = USB1_READ_Transaction(data, GetDescAll_pkt, MOUSE_DEVICE_ADDR, "GetDescAll_pkt");
     }
 
-    /* Setting configuration with new address 0x1 */
+    /* Setting configuration with new address MOUSE_DEVICE_ADDR */
     if (ret == 0){
-        ret = USB1_WRITE_Transaction(data, SetConf_pkt, 0x1, NULL, 0, "SetConf_pkt");
+        ret = USB1_WRITE_Transaction(data, SetConf_pkt, MOUSE_DEVICE_ADDR, NULL, 0, "SetConf_pkt");
     }
 
-    /* Getting configuration with new address 0x1, data recieved should be 0x1 */
+    /* Getting configuration with new address MOUSE_DEVICE_ADDR, data recieved should be 0x1 */
     if (ret == 0){
-        ret = USB1_READ_Transaction(data, GetConf_pkt, 0x1, "GetConf_pkt");
+        ret = USB1_READ_Transaction(data, GetConf_pkt, MOUSE_DEVICE_ADDR, "GetConf_pkt");
     }
+
 
     return ret;
 }
@@ -938,8 +947,8 @@ void USB1_SetupInterruptFifos(struct usb_device_data *data, u8 ep_in)
 
     USB1_Interrupt_SetAddrRx(data, MOUSE_DEVICE_ADDR, ep_in);
     USB1_Interrupt_SetTypeRx(data, ep_in, (data->full_speed) ? FULL_SPEED : LOW_SPEED, transfer_typeRX); 
-    USB1_Interrupt_SetRxMaxp(data, MaxPacketSzRX); // max packet (usually 8 byres)
-    USB1_Interrupt_SetRxInterval(data, RXInterval); // as ep_bulk_in_bInterval = 0x1
+    USB1_Interrupt_SetRxMaxp(data, MaxPacketSzRX); 
+    USB1_Interrupt_SetRxInterval(data, RXInterval); 
 }
 
 /* ================== API for Interrupt Transfer ===================== */
@@ -1049,7 +1058,8 @@ int usb1_rx_thread(void *arg)
             }
         }
 #if (PRINT_DATA)
-        if (n >= 5) {
+        /* For wireless mouse */
+        if (n >= 6) {
             // fetch data correctly
             data->report_id = pkt[0];
             data->button = pkt[1];
@@ -1058,7 +1068,17 @@ int usb1_rx_thread(void *arg)
             data->dz = (int8_t)pkt[4];
 
             printk("report_id = 0x%x, button = 0x%x, dx = %d, dy = %d, dz = %d\n", data->report_id, data->button, data->dx, data->dy, data->dz);
+        }
 
+        /* For wired mouse */
+        else {
+            // fetch data correctly
+            data->button = pkt[0];
+            data->dx = (int8_t)pkt[1];
+            data->dy = (int8_t)pkt[2];
+            data->dz = (int8_t)pkt[3];
+
+            printk("button = 0x%x, dx = %d, dy = %d, dz = %d\n", data->button, data->dx, data->dy, data->dz);
         }
 #endif
     }

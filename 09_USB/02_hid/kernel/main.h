@@ -3,8 +3,11 @@
 
 /* Control */
 #define PRINT_DEBUG 0
-#define PRINT_DATA 0
 
+/* Print data received on kernel */
+#define PRINT_DATA 1
+
+/* Print descriptor on kernel */
 #define PRINT_DESCRIPTOR 1
 
 #endif

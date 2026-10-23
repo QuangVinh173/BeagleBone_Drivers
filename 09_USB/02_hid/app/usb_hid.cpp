@@ -193,8 +193,6 @@ void HIDUSB::readMouseNeutralOption(){
         return;
     }
 
-    constexpr std::size_t MOUSE_REPORT_SIZE = 6;
-
     std::cout << "\nWaiting for mouse neutral report...\n"
               << "Expected: report_id=0x01, button=0, dx=0, dy=0, dz=0\n"
               << "Press Enter to return to menu.\n";
@@ -271,35 +269,66 @@ void HIDUSB::readMouseNeutralOption(){
 
         pendingMouseRx_.append(buffer, static_cast<std::size_t>(n));
 
-        while (pendingMouseRx_.size() >= MOUSE_REPORT_SIZE) {
+        while (1) {
             const auto* report =
                 reinterpret_cast<const std::uint8_t*>(
                     pendingMouseRx_.data());
 
-            const std::uint8_t reportId = report[0];
-            const std::uint8_t button   = report[1];
-            const std::int8_t dx = static_cast<std::int8_t>(report[2]);
-            const std::int8_t dy = static_cast<std::int8_t>(report[3]);
-            const std::int8_t dz = static_cast<std::int8_t>(report[4]);
+            /* Usually for wireless mouse */
+            if (n >= 6){
+                const std::uint8_t reportId = report[0];
+                const std::uint8_t button   = report[1];
+                const std::int8_t dx = static_cast<std::int8_t>(report[2]);
+                const std::int8_t dy = static_cast<std::int8_t>(report[3]);
+                const std::int8_t dz = static_cast<std::int8_t>(report[4]);
 
-            std::cout << "Mouse report: "
-                      << std::hex
-                      << static_cast<unsigned>(report[0]) << ' '
-                      << static_cast<unsigned>(report[1]) << ' '
-                      << static_cast<unsigned>(report[2]) << ' '
-                      << static_cast<unsigned>(report[3]) << ' '
-                      << static_cast<unsigned>(report[4]) << ' '
-                      << static_cast<unsigned>(report[5])
-                      << std::dec << '\n';
+                std::cout << "Mouse report: "
+                        << std::hex
+                        << static_cast<unsigned>(report[0]) << ' '
+                        << static_cast<unsigned>(report[1]) << ' '
+                        << static_cast<unsigned>(report[2]) << ' '
+                        << static_cast<unsigned>(report[3]) << ' '
+                        << static_cast<unsigned>(report[4]) << ' '
+                        << static_cast<unsigned>(report[5])
+                        << std::dec << '\n';
 
-            std::cout << "report_id = 0x" << std::hex
-                      << static_cast<unsigned>(reportId) << std::dec
-                      << ", button = " << static_cast<unsigned>(button)
-                      << ", dx = " << static_cast<int>(dx)
-                      << ", dy = " << static_cast<int>(dy)
-                      << ", dz = " << static_cast<int>(dz) << '\n';
+                std::cout << "report_id = 0x" << std::hex
+                        << static_cast<unsigned>(reportId) << std::dec
+                        << ", button = " << static_cast<unsigned>(button)
+                        << ", dx = " << static_cast<int>(dx)
+                        << ", dy = " << static_cast<int>(dy)
+                        << ", dz = " << static_cast<int>(dz) << '\n';
 
-            pendingMouseRx_.erase(0, MOUSE_REPORT_SIZE);
+                pendingMouseRx_.erase(0, n);
+
+                break;
+            }
+
+            /* Usually for wired mouse */
+            else {
+                const std::uint8_t button   = report[0];
+                const std::int8_t dx = static_cast<std::int8_t>(report[1]);
+                const std::int8_t dy = static_cast<std::int8_t>(report[2]);
+                const std::int8_t dz = static_cast<std::int8_t>(report[3]);
+
+                std::cout << "Mouse report: "
+                        << std::hex
+                        << static_cast<unsigned>(report[0]) << ' '
+                        << static_cast<unsigned>(report[1]) << ' '
+                        << static_cast<unsigned>(report[2]) << ' '
+                        << static_cast<unsigned>(report[3])
+                        << std::dec << '\n';
+
+                std::cout 
+                        << "button = " << static_cast<unsigned>(button)
+                        << ", dx = " << static_cast<int>(dx)
+                        << ", dy = " << static_cast<int>(dy)
+                        << ", dz = " << static_cast<int>(dz) << '\n';
+
+                pendingMouseRx_.erase(0, n);
+
+                break;
+            }
 
         }
     }
