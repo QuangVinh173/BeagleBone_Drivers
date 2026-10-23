@@ -29,9 +29,11 @@ information, and monitoring mouse reports.
     report-viewing option.
     
 Connection:
+
 <img src="images/connection.png" alt="connection" width="400">
 
 Descriptor on kernel:
+
 <img src="images/descriptor.png" alt="connection" width="400">
 
 ## Testing
@@ -87,12 +89,15 @@ driver makes available. It does not start capture by itself. Choose
 may be available to display.
 
 Click button (button value):
+
 <img src="images/op43_button.png" alt="USB HID button" width="400">
 
 Movement (dx/dy value):
+
 <img src="images/op43_move.png" alt="USB HID move" width="400">
 
 Roll (dz value):
+
 <img src="images/op43_roll.png" alt="USB HID roll" width="400">
 
 ### Option 4 --- Capture movement
