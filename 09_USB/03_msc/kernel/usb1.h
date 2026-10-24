@@ -256,9 +256,9 @@
 #define USB_REQ_SET_ISOCH_DELAY		0x31
 
 enum usb_speed {
-	USB_SPEED_UNKNOWN = 0,			/* enumerating */
-	USB_SPEED_HIGH,		/* usb 2.0 */
-	USB_SPEED_FULL, USB_SPEED_LOW,				/* usb 1.1 */
+	USB_SPEED_UNKNOWN = 0,	
+	USB_SPEED_HIGH,		            /* usb 2.0 */
+	USB_SPEED_FULL, USB_SPEED_LOW,	/* usb 1.1 */
 };
 
 #define CONTROL_TYPE     0x0 /* Control transfer */
@@ -382,6 +382,7 @@ struct usb_device_data {
     bool done_configured;
     struct work_struct descriptor_work;
     struct work_struct descriptor_clear_work;
+    enum usb_speed speed_state;
 };
 
 /* ================== Handler ====================*/

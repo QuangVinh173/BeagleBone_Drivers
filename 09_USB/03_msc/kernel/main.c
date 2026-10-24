@@ -159,6 +159,12 @@ void Test_phase_4(struct usb_device_data *data){
     if (ret < 0){
         printk("Failed at USB1_f_Add_Content\n");
     }
+
+    // printk("======= ./.Trash-1000' =======\n");
+    // ret = USB1_f_Remove_Dir(data, "./.Trash-1000");
+    // if (ret < 0){
+    //     printk("Failed at USB1_f_Remove_Dir\n");
+    // }
 }
 
 /* Descriptor work */
@@ -220,10 +226,31 @@ static void requested_work(struct work_struct *work){
     /* Put the func/test for handling files/folders here */
     if (ret == 0){
         Test_phase_1(data);
-        // Test_phase_2(data);
-        // Test_phase_3(data);
-        // Test_phase_4(data);
+        Test_phase_2(data);
+        Test_phase_3(data);
+        Test_phase_4(data);
     }
+
+/*
+    Output:
+        |-[ ] 'Protocols'
+           |-[ ] 'i2c'
+              |---- 'data.txt'
+                 |-[.] 'i2c is a handy protocol.'
+           |-[ ] 'spi'
+              |---- 'data1.txt'
+                 |-[.] 'spi is a fast protocol.'
+        |---- 'Readme.txt'
+           |-[.] 'Lists of protocols.'
+        |-[ ] 'Countries'
+           |---- 'data.txt'
+              |-[.] 'This is a hidden language'
+        |-[ ] 'Languages'
+        |---- 'Languages.txt'
+           |-[.] 'Lanaguages are funny hahaha!!'
+        |-[ ] '.Hidden_Languages'
+
+*/
 
     if (ret == 0){
         ret = USB1_f_Read_All(data);
@@ -239,68 +266,49 @@ static int usb1_open(struct inode *inode, struct file *file){
     return 0;
 }
 
-// static long usb1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-// {
-//     struct usb_device_data *data = file->private_data;
-//     bool capture;
+static long usb1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct usb_device_data *data = file->private_data;
+    int ret;
 
-//     if (!data)
-//         return -ENODEV;
+    if (!data)
+        return -ENODEV;
 
-//     switch (cmd) {
-//         case BBB_HID_CONNECTION:
-//             struct hid_status status;
-//             status.connected  = data->done_configured;
-//             status.full_speed = data->full_speed;
+    switch (cmd) {
+        case BBB_MSC_CONNECTION:
+            struct msc_status status;
+            status.connected  = data->done_configured;
+            status.speed_state = data->speed_state;
 
-//             if (copy_to_user((void __user *)arg,
-//                             &status,
-//                             sizeof(status)))
-//                 return -EFAULT;
+            if (copy_to_user((void __user *)arg,
+                            &status,
+                            sizeof(status)))
+                return -EFAULT;
 
-//             return 0;
+            return 0;
 
-//         case BBB_HID_INFO:
-//             struct hid_info info;
-//             info.bcdUSB         = data->InsDeviceDescriptor.bcdUSB;
-//             info.idVendor       = data->InsDeviceDescriptor.idVendor;
-//             info.idProduct      = data->InsDeviceDescriptor.idProduct;
-//             info.bcdDevice      = data->InsDeviceDescriptor.bcdDevice;
-//             info.iManufacturer  = data->InsDeviceDescriptor.iManufacturer;
-//             info.iProduct       = data->InsDeviceDescriptor.iProduct;
-//             info.iSerialNumber  = data->InsDeviceDescriptor.iSerialNumber;
+        case BBB_MSC_INFO:
+            struct msc_info info;
+            info.bcdUSB         = data->InsDeviceDescriptor.bcdUSB;
+            info.idVendor       = data->InsDeviceDescriptor.idVendor;
+            info.idProduct      = data->InsDeviceDescriptor.idProduct;
+            info.bcdDevice      = data->InsDeviceDescriptor.bcdDevice;
+            info.iManufacturer  = data->InsDeviceDescriptor.iManufacturer;
+            info.iProduct       = data->InsDeviceDescriptor.iProduct;
+            info.iSerialNumber  = data->InsDeviceDescriptor.iSerialNumber;
 
-//             if (copy_to_user((void __user *)arg,
-//                             &info,
-//                             sizeof(info)))
-//                 return -EFAULT;
+            if (copy_to_user((void __user *)arg,
+                            &info,
+                            sizeof(info)))
+                return -EFAULT;
 
-//             return 0;
+            return 0;
 
-//         case BBB_HID_CAPTURE:
-//             if (copy_from_user(&capture,
-//                             (__u8 __user *)arg,
-//                             sizeof(capture)))
-//             {
-//                 return -EFAULT;
-//             }
-//             data->capture_data = capture;
-//             return 0;
-
-//         case BBB_HID_NOT_CAPTURE:
-//             if (copy_from_user(&capture,
-//                             (__u8 __user *)arg,
-//                             sizeof(capture)))
-//             {
-//                 return -EFAULT;
-//             }
-//             data->capture_data = capture;
-//             return 0;
-
-//         default:
-//             return -ENOTTY;
-//     }
-// }
+        default:
+            printk("UNDEFINED\n");
+            return -ENOTTY;
+    }
+}
 
 static const struct file_operations usb_device_fops = {
     .owner =            THIS_MODULE,

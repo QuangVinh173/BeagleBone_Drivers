@@ -227,7 +227,9 @@ void USB1_Scan_ClusterData(struct usb_device_data *data, u8* cluster_data, u8 cl
                 ret = USB1_Read_CLUSTER(data, (valid_Dir_Entry[i]->High_first_cluster << 16) | (valid_Dir_Entry[i]->Low_first_cluster), (u8*)Cluster_data, &Cluster_data_len, "Cluster next", 0);
                 if ((ret == 0)){
                     get_tree_padding(padding_index + 1, padding_buffer, CONTENT_TYPE); 
-                    if (all_dir&ALL_DIR_READ_ALL) USB1_Print_String((u8*)Cluster_data, valid_Dir_Entry[i]->File_size, padding_buffer);
+                    if (all_dir&ALL_DIR_READ_ALL) {
+                        USB1_Print_String((u8*)Cluster_data, valid_Dir_Entry[i]->File_size, padding_buffer);
+                    }
                 }       
             }
 #endif

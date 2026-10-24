@@ -83,6 +83,10 @@ typedef struct LFN_Root_Directory_Entry {
     u8 File_name3[4];
 } LFN_Root_Dir_Entry;
 
+void get_tree_padding(int padding_index, u8* buf, u8 type_file);
+void USB1_Read_NameFile(Root_Dir_Entry* SFN_entry, u8* Output_name, u16* Output_len);
+int USB1_Scan_Cluster(struct usb_device_data *data, u8* cluster_data, u8 cluster_num, bool print_data, u8 all_dir);
+
 int USB1_Read_CLUSTER(struct usb_device_data *data, u32 cluster_num, u8* cluster_data, u32* cluster_data_len, u8* name, bool print_data);
 int USB1_Write_CLUSTER(struct usb_device_data *data, u32 cluster_num, u8* cluster_data, u8* name, bool print_data);
 

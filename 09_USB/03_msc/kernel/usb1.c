@@ -119,7 +119,7 @@ void setFifo(struct usb_device_data *data){
     iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
 
     // fifo type0 (8-bit)
-    setRxEP0(data, 0, USB_SPEED_HIGH, CONTROL_TYPE);
+    setRxEP0(data, 0, data->speed_state, CONTROL_TYPE);
 
     babblectl = ioread8(data->base_usb1core + MUSB_BABBLE_CTL);
     if (babblectl&MUSB_BABBLE_RCV_DISABLE){
@@ -396,22 +396,40 @@ void USB1_exit(struct usb_device_data *data){
 /* ================== API for Control Transfer ===================== */
 /* First, reset */
 void USB1_Reset_Speed(struct usb_device_data *data){
-    u8 devctl = 0;
+    u8 devctl = 0, usbcore_pwr = 0;
+
+    /* Enable high speed nego */
+    usbcore_pwr = ioread32(data->base_usb1core + MUSB_POWER);
+    usbcore_pwr |= MUSB_POWER_HSENAB; /* enable high speed nego */
+    iowrite32(usbcore_pwr, data->base_usb1core + MUSB_POWER);
 
     reset(data);
     msleep(5);
     stop_reset(data);
 
-    // u32 usbcore_pwr = 0;
-    // usbcore_pwr = ioread32(data->base_usb1core + MUSB_POWER);
-    // usbcore_pwr |= (MUSB_POWER_HSENAB) | (MUSB_POWER_HSMODE); /* full speed */
-    // iowrite32(usbcore_pwr, data->base_usb1core + MUSB_POWER);
+    /* Check high speed after high speed nego */
+    usbcore_pwr = ioread32(data->base_usb1core + MUSB_POWER);
+    if (usbcore_pwr&MUSB_POWER_HSMODE){
+        printk("High speed\n");
+        data->speed_state = USB_SPEED_HIGH;
+        data->DeviceDescriptorPtr = (u8*)(&data->InsDeviceDescriptor);
+        return;
+    }
 
-
+    /* Check full or low speed */
     devctl = ioread8(data->base_usb1core + MUSB_DEVCTL);
-    if (devctl&MUSB_DEVCTL_FSDEV) printk("Full speed\n");
-    else if (devctl&MUSB_DEVCTL_LSDEV) printk("Low speed\n");
-    else printk("Undefined speed\n");
+    if (devctl&MUSB_DEVCTL_FSDEV) {
+        printk("Full speed\n");
+        data->speed_state = USB_SPEED_FULL;
+    }
+    else if (devctl&MUSB_DEVCTL_LSDEV) {
+        printk("Low speed\n");
+        data->speed_state = USB_SPEED_LOW;
+    }
+    else {
+        printk("Undefined speed\n");
+        data->speed_state = USB_SPEED_UNKNOWN;
+    }
 
     // set ptr
     data->DeviceDescriptorPtr = (u8*)(&data->InsDeviceDescriptor);
