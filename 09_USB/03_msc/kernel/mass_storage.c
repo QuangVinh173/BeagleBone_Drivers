@@ -3,6 +3,7 @@
 #include "main.h"
 #include <linux/math64.h>
 #include <linux/byteorder/generic.h> // for get_unaligned_leXX/beXX
+#include <linux/slab.h>
 
 cbw_EAA cbw_EAA_Instance;
 
@@ -141,19 +142,26 @@ void SetMem(u8* data, u8* val, u16 size){
 }
 
 /* Print result */
-void USB1_Print_String(u8 *data, u16 len, u8* string) {
-    u8 tmp[100];
-    u16 i = 0;
+void USB1_Print_String(u8 *data, u16 len, u8 *string)
+{
+    u8 *tmp;
 
-    if (data == NULL || len == 0)
+    if (!data || len == 0)
         return;
 
-    for (i = 0; i < len; i++) {
-        tmp[i] = data[i];
+    /* The length comes from FAT directory metadata and may exceed 99 bytes. */
+    tmp = kvmalloc((size_t)len + 1, GFP_KERNEL);
+    if (!tmp) {
+        printk(KERN_ERR "USB1_Print_String: cannot allocate %u-byte buffer\n",
+               (unsigned int)len + 1);
+        return;
     }
-    tmp[len] = '\0'; // add null terminator
 
-    printk("%s '%s'\n", string, tmp);
+    memcpy(tmp, data, len);
+    tmp[len] = '\0';
+    printk("%s '%s'\n", string ? (char *)string : "(string)",
+           (char *)tmp);
+    kvfree(tmp);
 }
 
 int USB1_Gather_LFN_String(u8 *data, u16 len, u8 *output_buf, u16 *buf_size) {

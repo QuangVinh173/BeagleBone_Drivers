@@ -13,6 +13,7 @@
 #include "main.h"
 #include "mass_storage.h"
 #include "fat32.h"
+#include "msc_ctl.h"
 
 #define DRIVER_NAME "usb1_driver"
 #define DEVICE_NAME "usb1"
@@ -167,6 +168,198 @@ void Test_phase_4(struct usb_device_data *data){
     // }
 }
 
+void Test_phase_5(struct usb_device_data *data){
+    int ret;
+    int i = 0;
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_Dir(data, "./Languages");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_Dir\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./Languages/data.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./Languages/data.txt", "Lanaguages are funny hahaha!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Read_File(data, "./Languages/data.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Read_File\n");
+    }
+
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_Dir(data, "./Countries");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_Dir\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./Countries/VietNam.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+    ret = USB1_f_Add_Content(data, "./Countries/VietNam.txt", "VietNam is a great country!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./Countries/China.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./Countries/China.txt", "China is next to VietNam!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_Dir(data, "./.Hidden_item");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_Dir\n");
+        return;
+    }
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./.Hidden_item/tea.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./.Hidden_item/tea.txt", "Tea is made in China!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./.Hidden_item/coffee.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./.Hidden_item/coffee.txt", "coffee is made in Western!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Read_All(data);
+    if (ret < 0){
+        printk("Failed at USB1_f_Read_All\n");
+        return;
+    }
+
+
+
+
+
+
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Delete_Content(data, "./Languages/data.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Delete_Content\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Remove_File(data, "./Languages/data.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Remove_File\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Remove_Dir(data, "./Languages");
+    if (ret < 0){
+        printk("Failed at USB1_f_Remove_Dir\n");
+        return;
+    }
+
+
+
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_Dir(data, "./Languages_new");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_Dir\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Make_File(data, "./Languages_new/data_new.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Make_File\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./Languages_new/data_new.txt", "Lanaguages NEW new are funny hahaha!!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Read_File(data, "./Languages_new/data_new.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Read_File\n");
+    }
+
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Delete_Content(data, "./Countries/China.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Delete_Content\n");
+        return;
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./Countries/China.txt", "CHINA is a northen country of VietNam!");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Delete_Content(data, "./.Hidden_item/coffee.txt");
+    if (ret < 0){
+        printk("Failed at USB1_f_Delete_Content\n");
+        return;
+    }
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Add_Content(data, "./.Hidden_item/coffee.txt", "Sorry, coffee is from everywhere..");
+    if (ret < 0){
+        printk("Failed at USB1_f_Add_Content\n");
+    }
+
+    printk("STEP%d\n", ++i);
+    ret = USB1_f_Read_All(data);
+    if (ret < 0){
+        printk("Failed at USB1_f_Read_All\n");
+        return;
+    }
+}
+
 /* Descriptor work */
 static void descriptor_work_func(struct work_struct *work){
     struct usb_device_data *data = container_of(work, struct usb_device_data, descriptor_work);
@@ -201,7 +394,9 @@ static void descriptor_work_func(struct work_struct *work){
             printk("Fail USB1_CBW\n");
         }
 
+#if (PRINT_TEST_KERNEL_FAT32)
         if (ret == 0) schedule_work(&data->re_request_work);
+#endif
     }
     
 }
@@ -214,6 +409,7 @@ static void descriptor_clear_work_func(struct work_struct *work){
 }
 
 static void requested_work(struct work_struct *work){
+#if (PRINT_TEST_KERNEL_FAT32)
     struct usb_device_data *data = container_of(work, struct usb_device_data, re_request_work);
     int ret;
 
@@ -221,43 +417,34 @@ static void requested_work(struct work_struct *work){
     ret = USB1_f_Mount(data);
     if (ret < 0){
         printk("Failed at USB1_f_Mount\n");
+        return;
     }
 
     /* Put the func/test for handling files/folders here */
     if (ret == 0){
-        Test_phase_1(data);
-        Test_phase_2(data);
-        Test_phase_3(data);
-        Test_phase_4(data);
+        // Test_phase_1(data);
+        // Test_phase_2(data);
+        // Test_phase_3(data);
+        // Test_phase_4(data);
+
+        
+        Test_phase_5(data);
     }
 
 /*
     Output:
-        |-[ ] 'Protocols'
-           |-[ ] 'i2c'
-              |---- 'data.txt'
-                 |-[.] 'i2c is a handy protocol.'
-           |-[ ] 'spi'
-              |---- 'data1.txt'
-                 |-[.] 'spi is a fast protocol.'
-        |---- 'Readme.txt'
-           |-[.] 'Lists of protocols.'
+        |-[ ] 'Languages_new'
+           |---- 'data_new.txt'
+              |-[.] 'Lanaguages NEW new are funny hahaha!!'
         |-[ ] 'Countries'
-           |---- 'data.txt'
-              |-[.] 'This is a hidden language'
-        |-[ ] 'Languages'
-        |---- 'Languages.txt'
-           |-[.] 'Lanaguages are funny hahaha!!'
-        |-[ ] '.Hidden_Languages'
+           |---- 'VietNam.txt'
+              |-[.] 'VietNam is a great country!!'
+           |---- 'China.txt'
+              |-[.] 'CHINA is a northen country of VietNam!'
+
 
 */
-
-    if (ret == 0){
-        ret = USB1_f_Read_All(data);
-        if (ret < 0){
-            printk("Failed at USB1_f_Read_All\n");
-        }
-    }
+#endif
 }
 
 static int usb1_open(struct inode *inode, struct file *file){
@@ -270,6 +457,7 @@ static long usb1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct usb_device_data *data = file->private_data;
     int ret;
+    struct msc_command cmd1;
 
     if (!data)
         return -ENODEV;
@@ -304,8 +492,115 @@ static long usb1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
             return 0;
 
+        case BBB_MSC_MOUNT:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+
+            ret = USB1_f_Mount(data);
+
+            return ret;
+
+        case BBB_MSC_READ_ALL:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Read_All(data);
+
+            return ret;
+
+        case BBB_MSC_READ_FILE:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            //printk("cmd.string = '%s'\n", cmd.string);
+            ret = USB1_f_Read_File(data, cmd1.string);
+
+            return ret;
+
+        case BBB_MSC_READ_DIR:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            //printk("cmd.string = '%s'\n", cmd.string);
+            ret = USB1_f_Read_Dir(data, cmd1.string);
+
+            return ret;
+
+        case BBB_MSC_ADD_CONTENT:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Add_Content(data, cmd1.string, cmd1.content);
+
+            return ret;
+
+        case BBB_MSC_DELETE_CONTENT:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            //printk("cmd.string = '%s'\n", cmd.string);
+            ret = USB1_f_Delete_Content(data, cmd1.string);
+
+            return ret;
+
+
+        case BBB_MSC_MAKE_FILE:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Make_File(data, cmd1.string);
+
+            return ret;
+
+        case BBB_MSC_REMV_FILE:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Remove_File(data, cmd1.string);
+
+            return ret;
+
+
+
+        case BBB_MSC_MAKE_DIR:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Make_Dir(data, cmd1.string);
+
+            return ret;
+
+        case BBB_MSC_REMV_DIR:
+            if (copy_from_user(&cmd1,
+                            (struct msc_command __user *)arg,
+                            sizeof(cmd1))) {
+                return -EFAULT;
+            }
+            ret = USB1_f_Remove_Dir(data, cmd1.string);
+
+            return ret;
+
         default:
-            printk("UNDEFINED\n");
+            printk("UNDEFINED cmd\n");
             return -ENOTTY;
     }
 }
@@ -426,6 +721,7 @@ static int usb1_probe(struct platform_device *pdev)
     data->isEnd = 0;
     data->RX_index = 0;
     data->usb1_cbw.dCBWTag = 0; // initialize tag 
+    data->done_mounted = false;
 
 
     INIT_WORK(&data->re_request_work, requested_work);
@@ -433,6 +729,8 @@ static int usb1_probe(struct platform_device *pdev)
 
     INIT_WORK(&data->descriptor_work, descriptor_work_func);
     INIT_WORK(&data->descriptor_clear_work, descriptor_clear_work_func);
+
+    init_waitqueue_head(&data->irq_wait);
 
     return 0;
 }
@@ -451,6 +749,7 @@ static int usb1_remove(struct platform_device *pdev)
 
     /* Mark the device unavailable first. */
     WRITE_ONCE(data->done_configured, false);
+    wake_up_interruptible(&data->irq_wait);
 
     USB1_exit(data);
 

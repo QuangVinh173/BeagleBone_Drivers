@@ -1,4 +1,4 @@
-usb-y := main.o usb1.o mass_storage.o fat32.o
+usb-y := main.o usb1.o mass_storage.o fat32.o 
 obj-m += usb.o
 
 KDIR := /home/vinh/build_BBB_custom/linux-stable-rcn-ee

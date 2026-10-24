@@ -140,37 +140,94 @@ void CpyMem(u8* dst, u8* src, u32 len){
     }
 }
 
-int wait_register_update(struct usb_device_data *data, void __iomem *mem, u16 reg_offset, u16 bit_offset, u8 bit_val, u16 delay_ms, u8* name_register){
-    unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
 
-    while ((ioread32(mem + reg_offset)&(1u << bit_offset)) != (bit_val << bit_offset))  // Wait register updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_register);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+
+
+int wait_register_update(struct usb_device_data *data,
+                         void __iomem *mem,
+                         u16 reg_offset,
+                         u16 bit_offset,
+                         u8 bit_val,
+                         u16 delay_ms,
+                         u8 *name_register)
+{
+    long ret;
+    u32 mask;
+    u32 expected;
+    void __iomem *reg;
+
+    if (!data || !mem || bit_offset >= 32 || bit_val > 1)
+        return -EINVAL;
+
+    reg = (u8 __iomem *)mem + reg_offset;
+    mask = BIT(bit_offset);
+    expected = bit_val ? mask : 0;
+
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (ioread32(reg) & mask) == expected,
+        msecs_to_jiffies(delay_ms)
+    );
+
+    if (ret < 0) {
+        dev_info(data->dev,
+                "Wait for register %s interrupted: %ld\n",
+                name_register, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        dev_err(data->dev,
+                "Reg Timeout %s: bit %u expected %u\n",
+                name_register, bit_offset, bit_val);
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
 
-int wait_val_update(struct usb_device_data *data, u16* var, u16 val, u16 delay_ms, u8* name_val){
+int wait_val_update(
+    struct usb_device_data *data,
+    u16 *var,
+    u16 val,
+    u16 delay_ms,
+    u8* name_val)
+{
+    long ret;
     unsigned long timeout;
-    timeout = jiffies + msecs_to_jiffies(delay_ms);
 
-    while (*var != val)  // Wait val updated
-    {
-        if (time_after(jiffies, timeout)) {
-            dev_err(data->dev, "Timeout %s\n", name_val);
-            return -ETIMEDOUT;
-        }
-        cpu_relax();
-    } 
+    if (!data || !var || val == 0)
+        return -EINVAL;
+
+    timeout = msecs_to_jiffies(delay_ms);
+
+    /*
+     * Sleep until the requested event bit is set,
+     * a signal interrupts the wait, or timeout expires.
+     */
+    ret = wait_event_interruptible_timeout(
+        data->irq_wait,
+        (READ_ONCE(*var) & val) != 0,
+        timeout);
+
+    if (ret < 0) {
+        // dev_info(data->dev,
+        //          "Val - Wait for %s interrupted: %ld\n",
+        //          name_val, ret);
+        return (int)ret;
+    }
+
+    if (ret == 0) {
+        // dev_err(data->dev,
+        //         "Val - Timeout waiting for %s (mask=0x%04x, flags=0x%04x)\n",
+        //         name_val, val, READ_ONCE(*var));
+        return -ETIMEDOUT;
+    }
 
     return 0;
 }
+
+
 
 void USB1_SetToken(struct usb_device_data *data, const u8* TokenSet){
     data->InsReq.bRequestType = TokenSet[0];
@@ -271,6 +328,12 @@ irqreturn_t USB1_handler(int irq, void *d){
             //printk("ISR -> RX[0x%x]\n", int_rx);
         }
 
+        /*
+        * Notify threads waiting for USB endpoint events.
+        */
+        if (int_tx || int_rx)
+            wake_up_interruptible(&data->irq_wait);
+
         data->count_many = 0;
     }
     if (irqst1){
@@ -286,6 +349,7 @@ irqreturn_t USB1_handler(int irq, void *d){
         }   
         if ((irqst1)&(1u << 5)){
             printk("Device disconnected\n");
+            data->done_mounted = false;
             schedule_work(&data->descriptor_clear_work);
         }     
         if ((irqst1)&(1u << 8)){

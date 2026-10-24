@@ -383,6 +383,9 @@ struct usb_device_data {
     struct work_struct descriptor_work;
     struct work_struct descriptor_clear_work;
     enum usb_speed speed_state;
+
+    bool done_mounted;
+    wait_queue_head_t   irq_wait;
 };
 
 /* ================== Handler ====================*/
