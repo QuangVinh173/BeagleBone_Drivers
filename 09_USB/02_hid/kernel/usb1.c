@@ -907,6 +907,19 @@ void USB1_Print_DeviceDescriptorIf0(struct usb_device_data *data){
     printk("# ----------------------------------- #\n");
 }
 /* ================== Utils for interrupt transfer ===================== */
+
+int get_x(unsigned int sz)
+{
+    int log2_sz = 0;
+
+    while (sz > 1) {
+        sz >>= 1;
+        log2_sz++;
+    }
+
+    return log2_sz - 3;
+}
+
 /* RX */
 void USB1_Interrupt_SetAddrRx(struct usb_device_data *data, u8 addr, u8 epnum){
     iowrite16(addr, data->base_usb1core + MUSB_RXFUNCADDR + (0x08 * epnum));
@@ -941,8 +954,8 @@ void USB1_SetupInterruptFifos(struct usb_device_data *data, u8 ep_in)
     // ======================================
 
     setIndex(data, ep_in);  
-    iowrite8(3, core + MUSB_RXFIFOSZ);                   /* 64 bytes */
-    iowrite16(128 >> 3, core + MUSB_RXFIFOADD);          /* RAM 128..191 */
+    iowrite8(get_x(MaxPacketSzRX), core + MUSB_RXFIFOSZ); /* 2^(3+3) = 64 bytes */
+    iowrite16(64 >> 3, core + MUSB_RXFIFOADD); /* RAM starts at 64 after fixed ep0 addr */
     //iowrite16(MUSB_RXCSR_CLRDATATOG, core + 0x10 + MUSB_RXCSR);
 
     USB1_Interrupt_SetAddrRx(data, MOUSE_DEVICE_ADDR, ep_in);
