@@ -1,6 +1,0 @@
-- Upload kernel code
-- Build cpp
-
-** Note **
-- we assign IP and set it up: 'sudo ip addr add 192.168.7.2/24 dev eth0' 'sudo ip link set eth0 up'
-- This cmd is set on both machines
