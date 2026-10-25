@@ -222,6 +222,7 @@ static long usb1_ioctl(struct file *file,
 static void descriptor_work_func(struct work_struct *work){
     struct usb_device_data *data = container_of(work, struct usb_device_data, descriptor_work);
     int ret;
+    u8 ep_out, ep_in;
 
     msleep(1000);
     /* Reset */
@@ -240,7 +241,9 @@ static void descriptor_work_func(struct work_struct *work){
         USB1_Print_DeviceDescriptorIf0(data);
 #endif
         // Setup FIFO, config once
-        USB1_SetupBulkFifos(data, 4, 3);
+        ep_out = data->InsDeviceDescriptor.ep_bulk_out_bEndpointAddress & 0x0F;
+        ep_in = data->InsDeviceDescriptor.ep_bulk_in_bEndpointAddress & 0x0F;
+        USB1_SetupBulkFifos(data, ep_out, ep_in);
 
         /* drop old data; no producer is running yet */
         kfifo_reset(&data->rx_fifo);                    

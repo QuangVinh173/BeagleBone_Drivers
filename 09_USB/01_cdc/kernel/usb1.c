@@ -102,17 +102,6 @@ USBCORE1 0x47401C00:
 void setIndex(struct usb_device_data *data, u8 epnum){
     iowrite8(epnum, data->base_usb1core + MUSB_INDEX); // @1C0E
 }
-
-void setRxEP0(struct usb_device_data *data, u8 epnum, u8 speed, u8 transfer_type){
-    u8 RxType = 0;
-
-    RxType = (speed << 6)&MUSB_TYPE_SPEED;
-    RxType |= (transfer_type << 4)&MUSB_TYPE_PROTO; // Control type
-    RxType |= (epnum << 0)&MUSB_TYPE_REMOTE_END;
-
-    iowrite8(RxType, data->base_usb1core + 0x10 + MUSB_TYPE0);
-}
-
 void setFifo(struct usb_device_data *data){
     u8 babblectl = 0;
 
@@ -125,7 +114,7 @@ void setFifo(struct usb_device_data *data){
     iowrite16(0x00, data->base_usb1core + MUSB_RXFIFOADD); 
 
     // fifo type0 (8-bit)
-    setRxEP0(data, 0, data->full_speed ? FULL_SPEED : LOW_SPEED, CONTROL_TYPE);
+    iowrite8(0x80, data->base_usb1core + 0x10 + MUSB_TYPE0);
 
     babblectl = ioread8(data->base_usb1core + MUSB_BABBLE_CTL);
     if (babblectl&MUSB_BABBLE_RCV_DISABLE){
@@ -133,7 +122,6 @@ void setFifo(struct usb_device_data *data){
         iowrite8(babblectl, data->base_usb1core + MUSB_BABBLE_CTL);
 	}
 }
-
 u32 fifo_offset(u8 epnum)
 {
 	return 0x20 + (epnum * 4); // @1C20
@@ -933,6 +921,18 @@ void USB1_PrintCoreConfig(struct usb_device_data *data)
 
 /* ================== Utils for bulk transfer ===================== */
 
+int get_x(unsigned int sz)
+{
+    int log2_sz = 0;
+
+    while (sz > 1) {
+        sz >>= 1;
+        log2_sz++;
+    }
+
+    return log2_sz - 3;
+}
+
 /* TX */
 void USB1_Bulk_SetAddrTx(struct usb_device_data *data, u8 addr, u8 epnum){
     iowrite16(addr, data->base_usb1core + MUSB_TXFUNCADDR + (0x08 * epnum));
@@ -1001,8 +1001,8 @@ void USB1_SetupBulkFifos(struct usb_device_data *data, u8 ep_out, u8 ep_in)
  
     // ====================================
     setIndex(data, ep_out);                              /* EP4 TX */
-    iowrite8(3, core + MUSB_TXFIFOSZ);                   /* 64 bytes */
-    iowrite16(64 >> 3, core + MUSB_TXFIFOADD);           /* RAM 64..127 */
+    iowrite8(get_x(MaxPacketSzTX), core + MUSB_TXFIFOSZ); /* 64 bytes */
+    iowrite16(64 >> 3, core + MUSB_TXFIFOADD);  /* RAM starts at 64 after fixed ep0 */
     //iowrite16(MUSB_TXCSR_MODE | MUSB_TXCSR_CLRDATATOG, core + 0x10 + MUSB_TXCSR);
 
     USB1_Bulk_SetAddrTx(data, ARDUINO_DEVICE_ADDR, ep_out);
@@ -1014,8 +1014,8 @@ void USB1_SetupBulkFifos(struct usb_device_data *data, u8 ep_out, u8 ep_in)
     // ======================================
 
     setIndex(data, ep_in);  
-    iowrite8(3, core + MUSB_RXFIFOSZ);                   /* 64 bytes */
-    iowrite16(128 >> 3, core + MUSB_RXFIFOADD);          /* RAM 128..191 */
+    iowrite8(get_x(MaxPacketSzRX), core + MUSB_RXFIFOSZ); /* 64 bytes */
+    iowrite16(64 + MaxPacketSzTX, core + MUSB_RXFIFOADD); /* RAM starts after fixed ep0 and epTX */
     //iowrite16(MUSB_RXCSR_CLRDATATOG, core + 0x10 + MUSB_RXCSR);
 
     USB1_Bulk_SetAddrRx(data, ARDUINO_DEVICE_ADDR, ep_in);
